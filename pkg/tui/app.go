@@ -1423,23 +1423,39 @@ func truncate(s string, max int) string {
 	return s[:max-2] + ".."
 }
 
+func (a *App) setCell(x, y int, ch rune, style tcell.Style) {
+	if x < 0 || x >= a.width || y < 0 || y >= a.height {
+		return
+	}
+	a.screen.SetContent(x, y, ch, nil, style)
+}
+
 func (a *App) fillLine(x, y int, ch rune, style tcell.Style) {
+	if y < 0 || y >= a.height {
+		return
+	}
 	for i := x; i < a.width; i++ {
-		a.screen.SetContent(i, y, ch, nil, style)
+		a.setCell(i, y, ch, style)
 	}
 }
 
 func (a *App) fillLineTo(x, y, end int, ch rune, style tcell.Style) {
+	if y < 0 || y >= a.height {
+		return
+	}
 	if end > a.width {
 		end = a.width
 	}
 	for i := x; i < end; i++ {
-		a.screen.SetContent(i, y, ch, nil, style)
+		a.setCell(i, y, ch, style)
 	}
 }
 
 func (a *App) drawText(x, y int, text string, style tcell.Style) {
+	if y < 0 || y >= a.height {
+		return
+	}
 	for i, ch := range text {
-		a.screen.SetContent(x+i, y, ch, nil, style)
+		a.setCell(x+i, y, ch, style)
 	}
 }
