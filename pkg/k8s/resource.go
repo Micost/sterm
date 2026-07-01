@@ -84,26 +84,40 @@ func (c *Client) Discover() ([]ResourceMeta, error) {
 	return out, nil
 }
 
-func category(gvr schema.GroupVersionResource) string {
-	if gvr.Group != "" {
-		return "custom"
+func isStandardGroup(group string) bool {
+	switch group {
+	case "", "apps", "batch", "networking.k8s.io",
+		"rbac.authorization.k8s.io", "storage.k8s.io",
+		"policy", "autoscaling", "admissionregistration.k8s.io",
+		"scheduling.k8s.io", "coordination.k8s.io",
+		"certificates.k8s.io", "node.k8s.io", "events.k8s.io",
+		"discovery.k8s.io", "flowcontrol.apiserver.k8s.io",
+		"resource.k8s.io", "storagemigration.k8s.io":
+		return true
 	}
+	return false
+}
 
-	switch gvr.Resource {
-	case "pods", "replicationcontrollers", "replicasets", "deployments",
-		"statefulsets", "daemonsets", "jobs", "cronjobs":
-		return "workloads"
-	case "services", "endpoints", "endpointslices", "ingresses":
-		return "network"
-	case "configmaps", "secrets", "persistentvolumeclaims",
-		"persistentvolumes", "storageclasses":
-		return "config"
-	case "namespaces", "nodes", "events":
-		return "cluster"
-	case "serviceaccounts", "roles", "rolebindings",
-		"clusterroles", "clusterrolebindings":
-		return "rbac"
-	default:
-		return "other"
+func isCommonResource(resource string) bool {
+	switch resource {
+	case "pods", "deployments", "statefulsets", "daemonsets",
+		"jobs", "cronjobs",
+		"services", "ingresses",
+		"configmaps", "secrets",
+		"namespaces", "nodes",
+		"persistentvolumeclaims", "persistentvolumes",
+		"serviceaccounts":
+		return true
 	}
+	return false
+}
+
+func category(gvr schema.GroupVersionResource) string {
+	if !isStandardGroup(gvr.Group) {
+		return "crd"
+	}
+	if isCommonResource(gvr.Resource) {
+		return "common"
+	}
+	return "other"
 }

@@ -9,7 +9,7 @@ resources, and exec'ing into containers — all without leaving the terminal.
 
 | Page | Keys | Action |
 |---|---|---|
-| **Browser** | Arrow keys / PgUp / PgDn / Home / End | Navigate resource types (grouped by category) |
+| **Browser** | Arrow keys / PgUp / PgDn / Home / End | Navigate resource types (3 categories: common / crd / other) |
 | | Enter | Enter resource instance list |
 | | `n` | Open namespace picker |
 | | ESC / Ctrl+C | Quit |

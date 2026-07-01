@@ -28,7 +28,7 @@ pkg/
 
 | 页面 | 快捷键 | 功能 |
 |---|---|---|
-| **Browser** | ↑↓/PgUp/PgDn/Home/End | 导航资源类型列表（按 category 分组） |
+| **Browser** | ↑↓/PgUp/PgDn/Home/End | 导航资源类型列表（common / crd / other 三栏） |
 | | Enter | 进入资源实例列表 |
 | | `n` | 打开命名空间选择器 |
 | | ESC/Ctrl+C | 退出 |
@@ -57,6 +57,16 @@ pkg/
 - `k8s.io/api` / `k8s.io/apimachinery` — K8s API 类型
 - `sigs.k8s.io/yaml` — YAML 序列化
 
+## Browser 分类
+
+Browser 页面将资源类型分为三栏：
+
+| 栏 | 说明 | 示例 |
+|---|---|---|
+| **common** | K8s 常用原生资源 | pods, deployments, services, configmaps, secrets, namespaces, nodes, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs, pvs, serviceaccounts |
+| **crd** | 非标准 API group 的资源（Operator/CRD） | prometheuses, certificates, etc. |
+| **other** | 其他原生 K8s 资源 | replicasets, endpoints, events, roles, storageclasses, etc. |
+
 ## 设计决策
 
 - **不用 tview**：tview 太重，裸 tcell 完全可控，渲染性能好
@@ -66,6 +76,7 @@ pkg/
 - **Edit 走外部编辑器**：Suspend TUI → $EDITOR → 读取修改 → Update API，和 kubectl edit 一样
 - **Exec 走 kubectl 二进制**：最简单可靠的 TTY 处理方案
 - **单 goroutine 事件循环**：`PollEvent` 为主，goroutine 通过 `PostEvent(&renderEvent{})` 触发渲染
+- **Browser 三栏分类**：common / crd / other，按字母排序，`category()` 根据 API group 和资源名判定
 
 ## 未实现 / 计划中
 
