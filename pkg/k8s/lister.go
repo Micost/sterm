@@ -138,6 +138,24 @@ func ToYAML(u *unstructured.Unstructured) (string, error) {
 	return string(raw), nil
 }
 
+func (c *Client) Delete(ctx context.Context, gvr schema.GroupVersionResource, ns, name string) error {
+	cli := c.dynamic.Resource(gvr)
+	if ns != "" {
+		return cli.Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	}
+	return cli.Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (c *Client) Update(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) error {
+	cli := c.dynamic.Resource(gvr)
+	if ns := obj.GetNamespace(); ns != "" {
+		_, err := cli.Namespace(ns).Update(ctx, obj, metav1.UpdateOptions{})
+		return err
+	}
+	_, err := cli.Update(ctx, obj, metav1.UpdateOptions{})
+	return err
+}
+
 func (c *Client) Namespaces(ctx context.Context) ([]string, error) {
 	nsGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
 	data, err := c.List(ctx, nsGVR, "")

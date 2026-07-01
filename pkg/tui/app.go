@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/Micost/sterm/pkg/k8s"
@@ -10,6 +12,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/yaml"
 )
 
 type page int
@@ -21,21 +25,24 @@ const (
 )
 
 type listPageState struct {
-	meta     k8s.ResourceMeta
-	data     *k8s.TableData
-	selected int
-	offset   int
-	filter   string
-	filterOn bool
+	meta          k8s.ResourceMeta
+	data          *k8s.TableData
+	selected      int
+	offset        int
+	filter        string
+	filterOn      bool
+	deleteConfirm bool
 }
 
 type detailPageState struct {
-	obj      *unstructured.Unstructured
-	yamlText string
-	descText string
-	showYAML bool
-	scroll   int
-	err      error
+	obj        *unstructured.Unstructured
+	gvr        schema.GroupVersionResource
+	namespaced bool
+	yamlText   string
+	descText   string
+	showYAML   bool
+	scroll     int
+	err        error
 }
 
 type App struct {
@@ -195,6 +202,11 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		return
 	}
 
+	if a.list.deleteConfirm {
+		a.handleDeleteConfirm(e)
+		return
+	}
+
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.curr = pageBrowser
@@ -212,6 +224,10 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		} else if e.Rune() == 'q' || e.Rune() == 'Q' {
 			a.curr = pageBrowser
 			a.list = nil
+		} else if e.Rune() == 'x' || e.Rune() == 'X' {
+			if len(a.filteredRows()) > 0 {
+				a.list.deleteConfirm = true
+			}
 		}
 	case tcell.KeyUp:
 		rows := a.visibleRows()
@@ -277,6 +293,8 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 		if e.Rune() == 'd' || e.Rune() == 'D' {
 			a.detail.showYAML = !a.detail.showYAML
 			a.detail.scroll = 0
+		} else if e.Rune() == 'e' || e.Rune() == 'E' {
+			go a.editResource()
 		}
 	}
 }
@@ -299,6 +317,37 @@ func (a *App) detailLines() int {
 		}
 	}
 	return lines
+}
+
+func (a *App) handleDeleteConfirm(e *tcell.EventKey) {
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.list.deleteConfirm = false
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'y', 'Y':
+			a.list.deleteConfirm = false
+			go a.doDelete()
+		case 'n', 'N':
+			a.list.deleteConfirm = false
+		}
+	}
+}
+
+func (a *App) doDelete() {
+	gvr := a.list.meta.GVR
+	rows := a.filteredRows()
+	if a.list.selected < 0 || a.list.selected >= len(rows) {
+		return
+	}
+	row := rows[a.list.selected]
+	ns := row.Obj.GetNamespace()
+	name := row.Obj.GetName()
+
+	if err := a.client.Delete(context.Background(), gvr, ns, name); err != nil {
+		_ = err
+	}
+	a.loadList()
 }
 
 func (a *App) handleFilterKey(e *tcell.EventKey) {
@@ -377,12 +426,63 @@ func (a *App) openDetail(row k8s.TableRow) {
 	}
 
 	a.detail = &detailPageState{
-		obj:      row.Obj,
-		yamlText: yamlText,
-		descText: k8s.Describe(row.Obj),
-		showYAML: true,
+		obj:        row.Obj,
+		gvr:        a.list.meta.GVR,
+		namespaced: a.list.meta.Namespaced,
+		yamlText:   yamlText,
+		descText:   k8s.Describe(row.Obj),
+		showYAML:   true,
 	}
 	a.curr = pageDetail
+}
+
+func (a *App) editResource() {
+	a.screen.Suspend()
+
+	tmp, err := os.CreateTemp("", "sterm-*.yaml")
+	if err != nil {
+		a.screen.Resume()
+		return
+	}
+	tmpPath := tmp.Name()
+	tmp.WriteString(a.detail.yamlText)
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+
+	a.screen.Resume()
+
+	raw, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return
+	}
+
+	var updated map[string]interface{}
+	if err := yaml.Unmarshal(raw, &updated); err != nil {
+		return
+	}
+
+	updatedObj := &unstructured.Unstructured{Object: updated}
+	if err := a.client.Update(context.Background(), a.detail.gvr, updatedObj); err != nil {
+		return
+	}
+
+	// refresh detail
+	yamlText, _ := k8s.ToYAML(updatedObj)
+	a.detail.obj = updatedObj
+	a.detail.yamlText = yamlText
+	a.detail.descText = k8s.Describe(updatedObj)
+	a.render()
 }
 
 func (a *App) quit() {
@@ -567,7 +667,17 @@ func (a *App) renderList() {
 	if total > 0 {
 		sel = a.list.selected + 1
 	}
-	info := fmt.Sprintf(" ↑↓:nav  /:filter  ESC:back  [%d/%d] %s", sel, total, filterInfo)
+	var info string
+	if a.list.deleteConfirm {
+		row := a.filteredRows()
+		name := "?"
+		if a.list.selected >= 0 && a.list.selected < len(row) {
+			name = row[a.list.selected].Cells[0]
+		}
+		info = fmt.Sprintf(" Delete %s? (y/N)", name)
+	} else {
+		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  ESC:back  [%d/%d] %s", sel, total, filterInfo)
+	}
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
