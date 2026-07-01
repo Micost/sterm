@@ -71,6 +71,9 @@ type App struct {
 	offset    int
 	recent    []k8s.ResourceMeta
 
+	browserFilter   string
+	browserFilterOn bool
+
 	// preview (right pane)
 	previewData *k8s.TableData
 	previewErr  error
@@ -175,10 +178,21 @@ func (a *App) addRecent(r k8s.ResourceMeta) {
 }
 
 func (a *App) browserList() []k8s.ResourceMeta {
+	if a.browserFilter != "" {
+		f := strings.ToLower(a.browserFilter)
+		out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
+		out = append(out, a.recent...)
+		for _, r := range a.resources {
+			if strings.Contains(strings.ToLower(r.Kind), f) || strings.Contains(strings.ToLower(r.Name()), f) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
 	out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
 	out = append(out, a.recent...)
 	for _, r := range a.resources {
-		if r.Category != "crd" {
+		if r.Category == "common" {
 			out = append(out, r)
 		}
 	}
@@ -293,6 +307,11 @@ func (a *App) handleNonKey(ev tcell.Event) {
 }
 
 func (a *App) handleBrowserKey(e *tcell.EventKey) {
+	if a.browserFilterOn {
+		a.handleBrowserFilterKey(e)
+		return
+	}
+
 	total := a.visibleBrowser()
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
@@ -346,8 +365,31 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		case 'G':
 			a.selected = total - 1
 			a.loadPreview()
+		case '/':
+			a.browserFilterOn = true
 		}
 	}
+}
+
+func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.browserFilter = ""
+		a.browserFilterOn = false
+		a.selected = 0
+	case tcell.KeyEnter:
+		a.browserFilterOn = false
+		_ = a.visibleBrowser()
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(a.browserFilter) > 0 {
+			a.browserFilter = a.browserFilter[:len(a.browserFilter)-1]
+		}
+		a.selected = 0
+	case tcell.KeyRune:
+		a.browserFilter += string(e.Rune())
+		a.selected = 0
+	}
+	a.loadPreview()
 }
 
 func (a *App) visibleBrowser() int {
@@ -1101,7 +1143,11 @@ func (a *App) renderBrowser() {
 	items := a.browserList()
 	total := len(items)
 	if total == 0 {
-		a.drawText(a.width/2-10, a.height/2, "No resources found", style)
+		msg := "No resources found"
+		if a.browserFilter != "" {
+			msg = fmt.Sprintf("No matches for \"%s\"", a.browserFilter)
+		}
+		a.drawText(a.width/2-len(msg)/2, a.height/2, msg, style)
 		return
 	}
 	if a.selected >= total {
@@ -1120,7 +1166,13 @@ func (a *App) renderBrowser() {
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	a.drawText(1, 0, fmt.Sprintf("%-*s %-*s %s", kindW, "KIND", resourceW, "RESOURCE", "NS"), headerStyle)
+	title := fmt.Sprintf("%-*s %-*s %s", kindW, "KIND", resourceW, "RESOURCE", "NS")
+	if a.browserFilterOn {
+		title = fmt.Sprintf(" [/] %s_", a.browserFilter)
+	} else if a.browserFilter != "" {
+		title = fmt.Sprintf(" [/] %s", a.browserFilter)
+	}
+	a.drawText(1, 0, title, headerStyle)
 	nameW := rightW - 16 // reserve " STATUS"
 	if nameW < 10 {
 		nameW = rightW
@@ -1206,7 +1258,13 @@ func (a *App) renderBrowser() {
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 	ns := a.nsDisplayName(a.namespace)
-	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  ESC:quit", ns)
+	filterInfo := ""
+	if a.browserFilterOn {
+		filterInfo = fmt.Sprintf(" [/] %s_", a.browserFilter)
+	} else if a.browserFilter != "" {
+		filterInfo = fmt.Sprintf(" [/] %s", a.browserFilter)
+	}
+	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  /:filter  ESC:quit%s", ns, filterInfo)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
