@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Micost/sterm/pkg/k8s"
 
@@ -16,12 +17,17 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+type renderEvent struct{}
+
+func (e *renderEvent) When() time.Time { return time.Now() }
+
 type page int
 
 const (
 	pageBrowser page = iota
 	pageList
 	pageDetail
+	pageLogs
 )
 
 type listPageState struct {
@@ -45,6 +51,15 @@ type detailPageState struct {
 	err        error
 }
 
+type logPageState struct {
+	ns, podName, container string
+	lines                  []string
+	maxLines               int
+	scroll                 int
+	autoScroll             bool
+	cancel                 context.CancelFunc
+}
+
 type App struct {
 	client *k8s.Client
 	screen tcell.Screen
@@ -60,6 +75,9 @@ type App struct {
 
 	// detail page
 	detail *detailPageState
+
+	// log page
+	log *logPageState
 
 	curr    page
 	width   int
@@ -139,6 +157,8 @@ func (a *App) eventLoop() {
 			a.width, a.height = a.screen.Size()
 			a.screen.Sync()
 			a.render()
+		default:
+			a.handleNonKey(ev)
 		}
 	}
 }
@@ -151,8 +171,17 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleListKey(e)
 	case pageDetail:
 		a.handleDetailKey(e)
+	case pageLogs:
+		a.handleLogKey(e)
 	}
 	a.render()
+}
+
+func (a *App) handleNonKey(ev tcell.Event) {
+	switch ev.(type) {
+	case *renderEvent:
+		a.render()
+	}
 }
 
 func (a *App) handleBrowserKey(e *tcell.EventKey) {
@@ -227,6 +256,12 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		} else if e.Rune() == 'x' || e.Rune() == 'X' {
 			if len(a.filteredRows()) > 0 {
 				a.list.deleteConfirm = true
+			}
+		} else if e.Rune() == 'l' || e.Rune() == 'L' {
+			rows := a.filteredRows()
+			if a.list.selected >= 0 && a.list.selected < len(rows) {
+				row := rows[a.list.selected]
+				a.openLogs(row)
 			}
 		}
 	case tcell.KeyUp:
@@ -436,6 +471,139 @@ func (a *App) openDetail(row k8s.TableRow) {
 	a.curr = pageDetail
 }
 
+func (a *App) openLogs(row k8s.TableRow) {
+	ns := row.Obj.GetNamespace()
+	podName := row.Obj.GetName()
+	containers := a.client.PodContainers(row.Obj)
+	if len(containers) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.log = &logPageState{
+		ns:         ns,
+		podName:    podName,
+		container:  containers[0],
+		maxLines:   2000,
+		autoScroll: true,
+		cancel:     cancel,
+	}
+	a.curr = pageLogs
+
+	go func() {
+		ch, err := a.client.StreamLogs(ctx, ns, podName, containers[0], 200)
+		if err != nil {
+			a.log.lines = append(a.log.lines, fmt.Sprintf("error: %v", err))
+			a.screen.PostEvent(&renderEvent{})
+			return
+		}
+		for line := range ch {
+			a.log.lines = append(a.log.lines, line)
+			if len(a.log.lines) > a.log.maxLines {
+				a.log.lines = a.log.lines[len(a.log.lines)-a.log.maxLines:]
+			}
+			a.screen.PostEvent(&renderEvent{})
+		}
+	}()
+}
+
+func (a *App) handleLogKey(e *tcell.EventKey) {
+	if a.log == nil {
+		return
+	}
+
+	switch e.Key() {
+	case tcell.KeyEscape, tcell.KeyCtrlC:
+		a.log.cancel()
+		a.log = nil
+		a.curr = pageList
+	case tcell.KeyUp:
+		a.log.autoScroll = false
+		if a.log.scroll > 0 {
+			a.log.scroll--
+		}
+	case tcell.KeyDown:
+		contentLines := a.height - 3
+		max := len(a.log.lines) - contentLines
+		if a.log.scroll < max {
+			a.log.scroll++
+		} else {
+			a.log.autoScroll = true
+		}
+	case tcell.KeyPgUp:
+		a.log.autoScroll = false
+		a.log.scroll -= a.visibleRows()
+		if a.log.scroll < 0 {
+			a.log.scroll = 0
+		}
+	case tcell.KeyPgDn:
+		a.log.scroll += a.visibleRows()
+		contentLines := a.height - 3
+		if max := len(a.log.lines) - contentLines; a.log.scroll >= max {
+			a.log.scroll = max
+			a.log.autoScroll = true
+		}
+	case tcell.KeyHome:
+		a.log.autoScroll = false
+		a.log.scroll = 0
+	case tcell.KeyEnd:
+		a.log.autoScroll = true
+	}
+}
+
+func (a *App) renderLogs() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	if a.log == nil {
+		return
+	}
+
+	// header
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	title := fmt.Sprintf(" %s/%s c:%s", a.log.ns, a.log.podName, a.log.container)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, title, headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	// adjust scroll for auto-follow
+	contentLines := a.height - 3
+	if a.log.autoScroll {
+		a.log.scroll = len(a.log.lines) - contentLines
+		if a.log.scroll < 0 {
+			a.log.scroll = 0
+		}
+	}
+
+	// render lines
+	for line := 0; line < contentLines && line+a.log.scroll < len(a.log.lines); line++ {
+		idx := line + a.log.scroll
+		text := a.log.lines[idx]
+		if len(text) > a.width {
+			text = text[:a.width]
+		}
+		a.drawText(0, 2+line, text, style)
+	}
+
+	// footer
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+
+	total := len(a.log.lines)
+	follow := " [F]"
+	if !a.log.autoScroll {
+		follow = ""
+	}
+	info := fmt.Sprintf(" ↑↓:scroll  End:follow  ESC:back  lines:%d%s", total, follow)
+	if len(a.log.lines) == 0 {
+		info = " Waiting for logs..."
+	}
+	a.drawText(1, a.height-1, info, footerStyle)
+}
+
 func (a *App) editResource() {
 	a.screen.Suspend()
 
@@ -499,6 +667,8 @@ func (a *App) render() {
 		a.renderList()
 	case pageDetail:
 		a.renderDetail()
+	case pageLogs:
+		a.renderLogs()
 	}
 
 	a.screen.Show()
