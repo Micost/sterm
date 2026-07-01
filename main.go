@@ -8,9 +8,12 @@ import (
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 )
 
 func main() {
+	klog.LogToStderr(false)
+
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
 		kubeconfig = clientcmd.RecommendedHomeFile

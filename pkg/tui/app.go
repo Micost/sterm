@@ -1206,7 +1206,7 @@ func (a *App) renderBrowser() {
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 	ns := a.nsDisplayName(a.namespace)
-	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  ESC:quit  [%d/%d]", ns, a.selected+1, total)
+	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  ESC:quit", ns)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
