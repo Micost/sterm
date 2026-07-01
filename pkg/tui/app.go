@@ -234,12 +234,12 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		if a.selected < len(a.resources)-1 {
 			a.selected++
 		}
-	case tcell.KeyPgUp:
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.selected -= a.visibleRows()
 		if a.selected < 0 {
 			a.selected = 0
 		}
-	case tcell.KeyPgDn:
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.selected += a.visibleRows()
 		if a.selected >= len(a.resources) {
 			a.selected = len(a.resources) - 1
@@ -249,8 +249,21 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 	case tcell.KeyEnd:
 		a.selected = len(a.resources) - 1
 	case tcell.KeyRune:
-		if e.Rune() == 'n' || e.Rune() == 'N' {
+		switch e.Rune() {
+		case 'n', 'N':
 			a.enterNamespacePicker()
+		case 'k', 'K':
+			if a.selected > 0 {
+				a.selected--
+			}
+		case 'j', 'J':
+			if a.selected < len(a.resources)-1 {
+				a.selected++
+			}
+		case 'g':
+			a.selected = 0
+		case 'G':
+			a.selected = len(a.resources) - 1
 		}
 	}
 }
@@ -281,34 +294,46 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.openDetail(row)
 		}
 	case tcell.KeyRune:
-		if e.Rune() == '/' {
+		switch e.Rune() {
+		case '/':
 			a.list.filter = ""
 			a.list.filterOn = true
-		} else if e.Rune() == 'q' || e.Rune() == 'Q' {
+		case 'q', 'Q':
 			a.curr = pageBrowser
 			a.list = nil
-		} else if e.Rune() == 'x' || e.Rune() == 'X' {
+		case 'x', 'X':
 			if len(a.filteredRows()) > 0 {
 				a.list.deleteConfirm = true
 			}
-		} else if e.Rune() == 'l' || e.Rune() == 'L' {
+		case 'l', 'L':
 			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
 				a.openLogs(row)
 			}
-		} else if e.Rune() == 's' || e.Rune() == 'S' {
+		case 's', 'S':
 			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
 				a.execShell(row)
 			}
-		} else if e.Rune() == 'n' || e.Rune() == 'N' {
+		case 'n', 'N':
 			a.enterNamespacePicker()
+		case 'k', 'K':
+			if a.list.selected > 0 {
+				a.list.selected--
+			}
+		case 'j', 'J':
+			max := a.filteredCount() - 1
+			if a.list.selected < max {
+				a.list.selected++
+			}
+		case 'g':
+			a.list.selected = 0
+		case 'G':
+			a.list.selected = a.filteredCount() - 1
 		}
 	case tcell.KeyUp:
-		rows := a.visibleRows()
-		_ = rows
 		if a.list.selected > 0 {
 			a.list.selected--
 		}
@@ -317,12 +342,12 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		if a.list.selected < max {
 			a.list.selected++
 		}
-	case tcell.KeyPgUp:
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.list.selected -= a.visibleRows()
 		if a.list.selected < 0 {
 			a.list.selected = 0
 		}
-	case tcell.KeyPgDn:
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.list.selected += a.visibleRows()
 		if max := a.filteredCount() - 1; a.list.selected > max {
 			a.list.selected = max
@@ -352,12 +377,12 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 		if a.detail.scroll < max {
 			a.detail.scroll++
 		}
-	case tcell.KeyPgUp:
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.detail.scroll -= a.visibleRows()
 		if a.detail.scroll < 0 {
 			a.detail.scroll = 0
 		}
-	case tcell.KeyPgDn:
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.detail.scroll += a.visibleRows()
 		if max := a.detailLines(); a.detail.scroll > max {
 			a.detail.scroll = max
@@ -367,13 +392,27 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 	case tcell.KeyEnd:
 		a.detail.scroll = a.detailLines()
 	case tcell.KeyRune:
-		if e.Rune() == 'd' || e.Rune() == 'D' {
+		switch e.Rune() {
+		case 'd', 'D':
 			a.detail.showYAML = !a.detail.showYAML
 			a.detail.scroll = 0
-		} else if e.Rune() == 'e' || e.Rune() == 'E' {
+		case 'e', 'E':
 			go a.editResource()
-		} else if e.Rune() == 's' || e.Rune() == 'S' {
+		case 's', 'S':
 			go a.execDetail()
+		case 'k', 'K':
+			if a.detail.scroll > 0 {
+				a.detail.scroll--
+			}
+		case 'j', 'J':
+			max := a.detailLines()
+			if a.detail.scroll < max {
+				a.detail.scroll++
+			}
+		case 'g':
+			a.detail.scroll = 0
+		case 'G':
+			a.detail.scroll = a.detailLines()
 		}
 	}
 }
@@ -574,13 +613,13 @@ func (a *App) handleLogKey(e *tcell.EventKey) {
 		} else {
 			a.log.autoScroll = true
 		}
-	case tcell.KeyPgUp:
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.log.autoScroll = false
 		a.log.scroll -= a.visibleRows()
 		if a.log.scroll < 0 {
 			a.log.scroll = 0
 		}
-	case tcell.KeyPgDn:
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.log.scroll += a.visibleRows()
 		contentLines := a.height - 3
 		if max := len(a.log.lines) - contentLines; a.log.scroll >= max {
@@ -592,6 +631,27 @@ func (a *App) handleLogKey(e *tcell.EventKey) {
 		a.log.scroll = 0
 	case tcell.KeyEnd:
 		a.log.autoScroll = true
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'k', 'K':
+			a.log.autoScroll = false
+			if a.log.scroll > 0 {
+				a.log.scroll--
+			}
+		case 'j', 'J':
+			contentLines := a.height - 3
+			max := len(a.log.lines) - contentLines
+			if a.log.scroll < max {
+				a.log.scroll++
+			} else {
+				a.log.autoScroll = true
+			}
+		case 'g':
+			a.log.autoScroll = false
+			a.log.scroll = 0
+		case 'G':
+			a.log.autoScroll = true
+		}
 	}
 }
 
@@ -763,12 +823,12 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 		if a.nsCursor < a.nsFilteredCount()-1 {
 			a.nsCursor++
 		}
-	case tcell.KeyPgUp:
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.nsCursor -= a.visibleRows()
 		if a.nsCursor < 0 {
 			a.nsCursor = 0
 		}
-	case tcell.KeyPgDn:
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.nsCursor += a.visibleRows()
 		if max := a.nsFilteredCount() - 1; a.nsCursor > max {
 			a.nsCursor = max
@@ -778,9 +838,22 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 	case tcell.KeyEnd:
 		a.nsCursor = a.nsFilteredCount() - 1
 	case tcell.KeyRune:
-		if e.Rune() == '/' {
+		switch e.Rune() {
+		case '/':
 			a.nsFilter = ""
 			a.nsFilterOn = true
+		case 'k', 'K':
+			if a.nsCursor > 0 {
+				a.nsCursor--
+			}
+		case 'j', 'J':
+			if a.nsCursor < a.nsFilteredCount()-1 {
+				a.nsCursor++
+			}
+		case 'g':
+			a.nsCursor = 0
+		case 'G':
+			a.nsCursor = a.nsFilteredCount() - 1
 		}
 	}
 }
