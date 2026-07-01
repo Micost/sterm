@@ -263,6 +263,12 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 				row := rows[a.list.selected]
 				a.openLogs(row)
 			}
+		} else if e.Rune() == 's' || e.Rune() == 'S' {
+			rows := a.filteredRows()
+			if a.list.selected >= 0 && a.list.selected < len(rows) {
+				row := rows[a.list.selected]
+				a.execShell(row)
+			}
 		}
 	case tcell.KeyUp:
 		rows := a.visibleRows()
@@ -330,6 +336,8 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 			a.detail.scroll = 0
 		} else if e.Rune() == 'e' || e.Rune() == 'E' {
 			go a.editResource()
+		} else if e.Rune() == 's' || e.Rune() == 'S' {
+			go a.execDetail()
 		}
 	}
 }
@@ -604,6 +612,34 @@ func (a *App) renderLogs() {
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
+func (a *App) execShell(row k8s.TableRow) {
+	ns := row.Obj.GetNamespace()
+	pod := row.Obj.GetName()
+	containers := a.client.PodContainers(row.Obj)
+	if len(containers) == 0 {
+		return
+	}
+
+	a.screen.Suspend()
+
+	cmd := exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", containers[0], "--", "sh")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+
+	a.screen.Resume()
+	a.render()
+}
+
+func (a *App) execDetail() {
+	if a.detail == nil || a.detail.obj == nil {
+		return
+	}
+	row := k8s.TableRow{Obj: a.detail.obj}
+	a.execShell(row)
+}
+
 func (a *App) editResource() {
 	a.screen.Suspend()
 
@@ -846,7 +882,7 @@ func (a *App) renderList() {
 		}
 		info = fmt.Sprintf(" Delete %s? (y/N)", name)
 	} else {
-		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  ESC:back  [%d/%d] %s", sel, total, filterInfo)
+		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  s:shell  ESC:back  [%d/%d] %s", sel, total, filterInfo)
 	}
 	a.drawText(1, a.height-1, info, footerStyle)
 }
@@ -907,7 +943,7 @@ func (a *App) renderDetail() {
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 
 	total := len(lines)
-	info := fmt.Sprintf(" ↑↓:nav  d:toggle  ESC:back  [%d/%d]", a.detail.scroll+1, total)
+	info := fmt.Sprintf(" ↑↓:nav  d:toggle  s:shell  ESC:back  [%d/%d]", a.detail.scroll+1, total)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
