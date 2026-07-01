@@ -159,6 +159,9 @@ func (a *App) loadResources() {
 }
 
 func (a *App) addRecent(r k8s.ResourceMeta) {
+	if r.Category == "crd" {
+		return
+	}
 	for i, rr := range a.recent {
 		if rr.GVR == r.GVR {
 			a.recent = append(a.recent[:i], a.recent[i+1:]...)
@@ -169,6 +172,17 @@ func (a *App) addRecent(r k8s.ResourceMeta) {
 	if len(a.recent) > 5 {
 		a.recent = a.recent[:5]
 	}
+}
+
+func (a *App) browserList() []k8s.ResourceMeta {
+	out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
+	out = append(out, a.recent...)
+	for _, r := range a.resources {
+		if r.Category != "crd" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (a *App) resourceAt(idx int) *k8s.ResourceMeta {
@@ -187,10 +201,11 @@ func (a *App) totalResources() int {
 }
 
 func (a *App) loadPreview() {
-	r := a.resourceAt(a.selected)
-	if r == nil {
+	items := a.browserList()
+	if a.selected >= len(items) {
 		return
 	}
+	r := items[a.selected]
 	gvr := r.GVR
 	ns := ""
 	if r.Namespaced {
@@ -202,8 +217,8 @@ func (a *App) loadPreview() {
 			a.previewErr = err
 			a.previewData = nil
 		} else {
-			rr := a.resourceAt(a.selected)
-			if rr == nil || rr.GVR != gvr {
+			items := a.browserList()
+			if a.selected >= len(items) || items[a.selected].GVR != gvr {
 				return
 			}
 			a.previewData = data
@@ -278,7 +293,7 @@ func (a *App) handleNonKey(ev tcell.Event) {
 }
 
 func (a *App) handleBrowserKey(e *tcell.EventKey) {
-	total := a.totalResources()
+	total := a.visibleBrowser()
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.quit()
@@ -286,12 +301,13 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		if !a.bReady || total == 0 {
 			return
 		}
-		r := a.resourceAt(a.selected)
-		if r == nil {
+		items := a.browserList()
+		if a.selected >= len(items) {
 			return
 		}
-		a.addRecent(*r)
-		a.list = &listPageState{meta: *r}
+		r := items[a.selected]
+		a.addRecent(r)
+		a.list = &listPageState{meta: r}
 		a.curr = pageList
 		go a.loadList()
 	case tcell.KeyUp:
@@ -304,18 +320,6 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.selected++
 			a.loadPreview()
 		}
-	case tcell.KeyPgUp, tcell.KeyCtrlU:
-		a.selected -= a.visibleRows()
-		if a.selected < 0 {
-			a.selected = 0
-		}
-		a.loadPreview()
-	case tcell.KeyPgDn, tcell.KeyCtrlD:
-		a.selected += a.visibleRows()
-		if a.selected >= total {
-			a.selected = total - 1
-		}
-		a.loadPreview()
 	case tcell.KeyHome:
 		a.selected = 0
 		a.loadPreview()
@@ -344,6 +348,10 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.loadPreview()
 		}
 	}
+}
+
+func (a *App) visibleBrowser() int {
+	return len(a.browserList())
 }
 
 func (a *App) handleListKey(e *tcell.EventKey) {
@@ -1087,10 +1095,14 @@ func (a *App) renderBrowser() {
 		return
 	}
 
-	total := a.totalResources()
+	items := a.browserList()
+	total := len(items)
 	if total == 0 {
 		a.drawText(a.width/2-10, a.height/2, "No resources found", style)
 		return
+	}
+	if a.selected >= total {
+		a.selected = total - 1
 	}
 
 	// split layout
@@ -1126,26 +1138,14 @@ func (a *App) renderBrowser() {
 	nsLabel := fmt.Sprintf(" ns: %s ", a.nsDisplayName(a.namespace))
 	a.drawText(sepCol+1, 1, nsLabel, style)
 
-	rows := a.visibleRows()
-	if a.selected < a.offset {
-		a.offset = a.selected
-	}
-	if a.selected >= a.offset+rows {
-		a.offset = a.selected - rows + 1
-	}
+	a.offset = 0
 
 	prevCat := ""
 	line := 2
-	for i := a.offset; i < total && line < a.height-1; i++ {
-		r := a.resourceAt(i)
-		if r == nil {
-			break
-		}
+	for i := 0; i < total && line < a.height-1; i++ {
+		r := &items[i]
 
 		cat := r.Category
-		if i < len(a.recent) {
-			cat = "recent"
-		}
 		if cat != prevCat && prevCat != "" {
 			if line < a.height-1 {
 				a.fillLineTo(0, line, sepCol, '·', sepStyle)
@@ -1194,8 +1194,8 @@ func (a *App) renderBrowser() {
 			}
 		}
 	} else if a.previewData == nil && a.previewErr == nil && rightW >= 10 {
-		r := a.resourceAt(a.selected)
-		if r != nil {
+		if a.selected < total {
+			r := items[a.selected]
 			a.drawText(sepCol+2, 2, fmt.Sprintf("Loading %s...", r.Name()), style)
 		}
 	}
