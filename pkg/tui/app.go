@@ -987,6 +987,8 @@ func (a *App) quit() {
 func (a *App) render() {
 	a.screen.Clear()
 
+	a.height--
+
 	switch a.curr {
 	case pageBrowser:
 		a.renderBrowser()
@@ -1000,6 +1002,7 @@ func (a *App) render() {
 		a.renderNamespace()
 	}
 
+	a.height++
 	a.screen.Show()
 }
 
