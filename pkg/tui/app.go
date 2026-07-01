@@ -1094,30 +1094,32 @@ func (a *App) renderBrowser() {
 	}
 
 	// split layout
-	const kindW = 20
-	const resourceW = 25
-	const leftWidth = 51 // kindW + 1 + resourceW + 1 + 2(ns) + 2(pad)
-	sepCol := leftWidth
-	rightPad := 1
-	rightWidth := a.width - sepCol - 1 - rightPad
+	sepCol := a.width / 2
+	leftW := sepCol - 1
+	rightW := a.width - sepCol - 1
+	kindW := 16
+	resourceW := leftW - kindW - 4 // reserve " NS" + padding
+	if resourceW < 10 {
+		resourceW = 10
+	}
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	a.drawText(1, 0, fmt.Sprintf("%-20s %-25s %s", "KIND", "RESOURCE", "NS"), headerStyle)
-	nameW := 25
-	statusW := 14
-	if rightWidth < nameW+statusW+1 {
-		nameW = rightWidth
-		statusW = 0
+	a.drawText(1, 0, fmt.Sprintf("%-*s %-*s %s", kindW, "KIND", resourceW, "RESOURCE", "NS"), headerStyle)
+	nameW := rightW - 16 // reserve " STATUS"
+	if nameW < 10 {
+		nameW = rightW
 	}
-	if statusW > 0 {
-		a.drawText(sepCol+1+rightPad, 0, fmt.Sprintf("%-*s %s", nameW, "NAME", "STATUS"), headerStyle)
+	if nameW >= 10 {
+		a.drawText(sepCol+1, 0, fmt.Sprintf("%-*s %s", nameW, "NAME", "STATUS"), headerStyle)
+	} else {
+		a.drawText(sepCol+1, 0, "NAME", headerStyle)
 	}
 
 	sepStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
-	// vertical separator
-	for y := 1; y < a.height-1; y++ {
+	// vertical separator full height
+	for y := 0; y < a.height-1; y++ {
 		a.screen.SetContent(sepCol, y, '│', nil, sepStyle)
 	}
 
@@ -1170,26 +1172,22 @@ func (a *App) renderBrowser() {
 	}
 
 	// right pane: instance preview
-	if a.previewData != nil && rightWidth >= 10 {
-		r := a.resourceAt(a.selected)
-		if r != nil {
-			top := 2
-			count := len(a.previewData.Rows)
-			countStr := fmt.Sprintf(" %s (%d) ", r.Kind, count)
-			a.drawText(sepCol+1, top, countStr, style)
-			maxRows := a.height - 3 - top
-			for i := 0; i < maxRows && i < count; i++ {
-				row := a.previewData.Rows[i]
-				rowY := top + 1 + i
-				name := truncate(row.Cells[0], nameW)
-				a.drawText(sepCol+1+rightPad, rowY, name, style)
-				if statusW > 0 && len(row.Cells) >= 5 {
-					st := truncate(row.Cells[4], statusW)
-					a.drawText(sepCol+1+rightPad+nameW+1, rowY, st, style)
+	if a.previewData != nil && rightW >= 10 {
+		maxRows := a.height - 3
+		for i := 0; i < maxRows && i < len(a.previewData.Rows); i++ {
+			row := a.previewData.Rows[i]
+			rowY := 2 + i
+			name := truncate(row.Cells[0], nameW)
+			a.drawText(sepCol+1, rowY, name, style)
+			if nameW < rightW {
+				st := ""
+				if len(row.Cells) >= 5 {
+					st = truncate(row.Cells[4], rightW-nameW-1)
 				}
+				a.drawText(sepCol+1+nameW+1, rowY, st, style)
 			}
 		}
-	} else if a.previewData == nil && a.previewErr == nil && rightWidth >= 10 {
+	} else if a.previewData == nil && a.previewErr == nil && rightW >= 10 {
 		r := a.resourceAt(a.selected)
 		if r != nil {
 			a.drawText(sepCol+2, 2, fmt.Sprintf("Loading %s...", r.Name()), style)
