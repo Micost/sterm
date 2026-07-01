@@ -69,6 +69,7 @@ type App struct {
 	resources []k8s.ResourceMeta
 	selected  int
 	offset    int
+	recent    []k8s.ResourceMeta
 
 	// list page
 	list *listPageState
@@ -150,6 +151,34 @@ func (a *App) loadResources() {
 	a.render()
 }
 
+func (a *App) addRecent(r k8s.ResourceMeta) {
+	for i, rr := range a.recent {
+		if rr.GVR == r.GVR {
+			a.recent = append(a.recent[:i], a.recent[i+1:]...)
+			break
+		}
+	}
+	a.recent = append([]k8s.ResourceMeta{r}, a.recent...)
+	if len(a.recent) > 5 {
+		a.recent = a.recent[:5]
+	}
+}
+
+func (a *App) resourceAt(idx int) *k8s.ResourceMeta {
+	if idx < len(a.recent) {
+		return &a.recent[idx]
+	}
+	idx2 := idx - len(a.recent)
+	if idx2 < len(a.resources) {
+		return &a.resources[idx2]
+	}
+	return nil
+}
+
+func (a *App) totalResources() int {
+	return len(a.recent) + len(a.resources)
+}
+
 func (a *App) enterNamespacePicker() {
 	a.nsPrevPage = a.curr
 	a.curr = pageNamespace
@@ -215,15 +244,20 @@ func (a *App) handleNonKey(ev tcell.Event) {
 }
 
 func (a *App) handleBrowserKey(e *tcell.EventKey) {
+	total := a.totalResources()
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.quit()
 	case tcell.KeyEnter:
-		if !a.bReady || len(a.resources) == 0 {
+		if !a.bReady || total == 0 {
 			return
 		}
-		r := a.resources[a.selected]
-		a.list = &listPageState{meta: r}
+		r := a.resourceAt(a.selected)
+		if r == nil {
+			return
+		}
+		a.addRecent(*r)
+		a.list = &listPageState{meta: *r}
 		a.curr = pageList
 		go a.loadList()
 	case tcell.KeyUp:
@@ -231,7 +265,7 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.selected--
 		}
 	case tcell.KeyDown:
-		if a.selected < len(a.resources)-1 {
+		if a.selected < total-1 {
 			a.selected++
 		}
 	case tcell.KeyPgUp, tcell.KeyCtrlU:
@@ -241,13 +275,13 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		}
 	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.selected += a.visibleRows()
-		if a.selected >= len(a.resources) {
-			a.selected = len(a.resources) - 1
+		if a.selected >= total {
+			a.selected = total - 1
 		}
 	case tcell.KeyHome:
 		a.selected = 0
 	case tcell.KeyEnd:
-		a.selected = len(a.resources) - 1
+		a.selected = total - 1
 	case tcell.KeyRune:
 		switch e.Rune() {
 		case 'n', 'N':
@@ -257,13 +291,13 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 				a.selected--
 			}
 		case 'j', 'J':
-			if a.selected < len(a.resources)-1 {
+			if a.selected < total-1 {
 				a.selected++
 			}
 		case 'g':
 			a.selected = 0
 		case 'G':
-			a.selected = len(a.resources) - 1
+			a.selected = total - 1
 		}
 	}
 }
@@ -1009,7 +1043,8 @@ func (a *App) renderBrowser() {
 		return
 	}
 
-	if len(a.resources) == 0 {
+	total := a.totalResources()
+	if total == 0 {
 		a.drawText(a.width/2-10, a.height/2, "No resources found", style)
 		return
 	}
@@ -1032,16 +1067,23 @@ func (a *App) renderBrowser() {
 
 	prevCat := ""
 	line := 2
-	for i := a.offset; i < len(a.resources) && line < a.height-1; i++ {
-		r := a.resources[i]
+	for i := a.offset; i < total && line < a.height-1; i++ {
+		r := a.resourceAt(i)
+		if r == nil {
+			break
+		}
 
-		if r.Category != prevCat && prevCat != "" {
+		cat := r.Category
+		if i < len(a.recent) {
+			cat = "recent"
+		}
+		if cat != prevCat && prevCat != "" {
 			if line < a.height-1 {
 				a.fillLine(0, line, '·', sepStyle)
 				line++
 			}
 		}
-		prevCat = r.Category
+		prevCat = cat
 
 		if line >= a.height-1 {
 			break
@@ -1066,7 +1108,6 @@ func (a *App) renderBrowser() {
 
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
-	total := len(a.resources)
 	ns := a.nsDisplayName(a.namespace)
 	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  ESC:quit  [%d/%d]", ns, a.selected+1, total)
 	a.drawText(1, a.height-1, info, footerStyle)
