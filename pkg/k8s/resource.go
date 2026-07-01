@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 )
 
 type ResourceMeta struct {
@@ -24,47 +23,54 @@ func (r ResourceMeta) APIVersion() string {
 }
 
 func (c *Client) Discover() ([]ResourceMeta, error) {
-	apiResources, err := discovery.ServerPreferredResources(c.discovery)
-	if err != nil && len(apiResources) == 0 {
+	groups, err := c.discovery.ServerGroups()
+	if err != nil {
 		return nil, err
 	}
 
 	seen := map[string]bool{}
 	var out []ResourceMeta
 
-	for _, list := range apiResources {
-		gv, err := schema.ParseGroupVersion(list.GroupVersion)
-		if err != nil {
-			continue
-		}
-
-		for _, r := range list.APIResources {
-			if !strings.Contains(r.Verbs.String(), "list") {
-				continue
-			}
-			if strings.Contains(r.Name, "/") {
+	for _, group := range groups.Groups {
+		for _, version := range group.Versions {
+			list, err := c.discovery.ServerResourcesForGroupVersion(version.GroupVersion)
+			if err != nil {
 				continue
 			}
 
-			gvr := schema.GroupVersionResource{
-				Group:    gv.Group,
-				Version:  gv.Version,
-				Resource: r.Name,
-			}
-
-			key := gvr.String()
-			if seen[key] {
+			gv, err := schema.ParseGroupVersion(list.GroupVersion)
+			if err != nil {
 				continue
 			}
-			seen[key] = true
 
-			cat := category(gvr)
-			out = append(out, ResourceMeta{
-				GVR:        gvr,
-				Kind:       r.Kind,
-				Namespaced: r.Namespaced,
-				Category:   cat,
-			})
+			for _, r := range list.APIResources {
+				if !strings.Contains(r.Verbs.String(), "list") {
+					continue
+				}
+				if strings.Contains(r.Name, "/") {
+					continue
+				}
+
+				gvr := schema.GroupVersionResource{
+					Group:    gv.Group,
+					Version:  gv.Version,
+					Resource: r.Name,
+				}
+
+				key := gvr.String()
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				cat := category(gvr)
+				out = append(out, ResourceMeta{
+					GVR:        gvr,
+					Kind:       r.Kind,
+					Namespaced: r.Namespaced,
+					Category:   cat,
+				})
+			}
 		}
 	}
 
