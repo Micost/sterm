@@ -71,6 +71,10 @@ type App struct {
 	offset    int
 	recent    []k8s.ResourceMeta
 
+	// preview (right pane)
+	previewData *k8s.TableData
+	previewErr  error
+
 	// list page
 	list *listPageState
 
@@ -149,6 +153,9 @@ func (a *App) loadResources() {
 		a.bReady = true
 	}
 	a.render()
+	if a.bReady {
+		a.loadPreview()
+	}
 }
 
 func (a *App) addRecent(r k8s.ResourceMeta) {
@@ -177,6 +184,33 @@ func (a *App) resourceAt(idx int) *k8s.ResourceMeta {
 
 func (a *App) totalResources() int {
 	return len(a.recent) + len(a.resources)
+}
+
+func (a *App) loadPreview() {
+	r := a.resourceAt(a.selected)
+	if r == nil {
+		return
+	}
+	gvr := r.GVR
+	ns := ""
+	if r.Namespaced {
+		ns = a.namespace
+	}
+	go func() {
+		data, err := a.client.List(context.Background(), gvr, ns)
+		if err != nil {
+			a.previewErr = err
+			a.previewData = nil
+		} else {
+			rr := a.resourceAt(a.selected)
+			if rr == nil || rr.GVR != gvr {
+				return
+			}
+			a.previewData = data
+			a.previewErr = nil
+		}
+		a.screen.PostEvent(&renderEvent{})
+	}()
 }
 
 func (a *App) enterNamespacePicker() {
@@ -263,25 +297,31 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 	case tcell.KeyUp:
 		if a.selected > 0 {
 			a.selected--
+			a.loadPreview()
 		}
 	case tcell.KeyDown:
 		if a.selected < total-1 {
 			a.selected++
+			a.loadPreview()
 		}
 	case tcell.KeyPgUp, tcell.KeyCtrlU:
 		a.selected -= a.visibleRows()
 		if a.selected < 0 {
 			a.selected = 0
 		}
+		a.loadPreview()
 	case tcell.KeyPgDn, tcell.KeyCtrlD:
 		a.selected += a.visibleRows()
 		if a.selected >= total {
 			a.selected = total - 1
 		}
+		a.loadPreview()
 	case tcell.KeyHome:
 		a.selected = 0
+		a.loadPreview()
 	case tcell.KeyEnd:
 		a.selected = total - 1
+		a.loadPreview()
 	case tcell.KeyRune:
 		switch e.Rune() {
 		case 'n', 'N':
@@ -289,15 +329,19 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		case 'k', 'K':
 			if a.selected > 0 {
 				a.selected--
+				a.loadPreview()
 			}
 		case 'j', 'J':
 			if a.selected < total-1 {
 				a.selected++
+				a.loadPreview()
 			}
 		case 'g':
 			a.selected = 0
+			a.loadPreview()
 		case 'G':
 			a.selected = total - 1
+			a.loadPreview()
 		}
 	}
 }
@@ -1049,13 +1093,33 @@ func (a *App) renderBrowser() {
 		return
 	}
 
+	// split layout
+	const kindW = 20
+	const resourceW = 25
+	const leftWidth = 51 // kindW + 1 + resourceW + 1 + 2(ns) + 2(pad)
+	sepCol := leftWidth
+	rightPad := 1
+	rightWidth := a.width - sepCol - 1 - rightPad
+
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	a.drawText(1, 0, fmt.Sprintf("%-24s %-30s %-30s %s",
-		"KIND", "RESOURCE", "APIVERSION", "NAMESPACED"), headerStyle)
+	a.drawText(1, 0, fmt.Sprintf("%-20s %-25s %s", "KIND", "RESOURCE", "NS"), headerStyle)
+	nameW := 25
+	statusW := 14
+	if rightWidth < nameW+statusW+1 {
+		nameW = rightWidth
+		statusW = 0
+	}
+	if statusW > 0 {
+		a.drawText(sepCol+1+rightPad, 0, fmt.Sprintf("%-*s %s", nameW, "NAME", "STATUS"), headerStyle)
+	}
 
 	sepStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
+	// vertical separator
+	for y := 1; y < a.height-1; y++ {
+		a.screen.SetContent(sepCol, y, '│', nil, sepStyle)
+	}
 
 	rows := a.visibleRows()
 	if a.selected < a.offset {
@@ -1101,9 +1165,35 @@ func (a *App) renderBrowser() {
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-24s %-30s %-30s %s",
-			r.Kind, r.Name(), r.APIVersion(), ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-20s %-25s %s", r.Kind, r.Name(), ns), rowStyle)
 		line++
+	}
+
+	// right pane: instance preview
+	if a.previewData != nil && rightWidth >= 10 {
+		r := a.resourceAt(a.selected)
+		if r != nil {
+			top := 2
+			count := len(a.previewData.Rows)
+			countStr := fmt.Sprintf(" %s (%d) ", r.Kind, count)
+			a.drawText(sepCol+1, top, countStr, style)
+			maxRows := a.height - 3 - top
+			for i := 0; i < maxRows && i < count; i++ {
+				row := a.previewData.Rows[i]
+				rowY := top + 1 + i
+				name := truncate(row.Cells[0], nameW)
+				a.drawText(sepCol+1+rightPad, rowY, name, style)
+				if statusW > 0 && len(row.Cells) >= 5 {
+					st := truncate(row.Cells[4], statusW)
+					a.drawText(sepCol+1+rightPad+nameW+1, rowY, st, style)
+				}
+			}
+		}
+	} else if a.previewData == nil && a.previewErr == nil && rightWidth >= 10 {
+		r := a.resourceAt(a.selected)
+		if r != nil {
+			a.drawText(sepCol+2, 2, fmt.Sprintf("Loading %s...", r.Name()), style)
+		}
 	}
 
 	footerStyle := style.Foreground(tcell.ColorGray)
