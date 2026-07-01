@@ -1016,8 +1016,8 @@ func (a *App) renderBrowser() {
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	a.drawText(1, 0, fmt.Sprintf("%-24s %-30s %-12s %s",
-		"RESOURCE", "APIVERSION", "KIND", "NAMESPACED"), headerStyle)
+	a.drawText(1, 0, fmt.Sprintf("%-24s %-30s %-30s %s",
+		"KIND", "RESOURCE", "APIVERSION", "NAMESPACED"), headerStyle)
 
 	sepStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
@@ -1059,8 +1059,8 @@ func (a *App) renderBrowser() {
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-24s %-30s %-12s %s",
-			r.Name(), r.APIVersion(), r.Kind, ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-24s %-30s %-30s %s",
+			r.Kind, r.Name(), r.APIVersion(), ns), rowStyle)
 		line++
 	}
 
