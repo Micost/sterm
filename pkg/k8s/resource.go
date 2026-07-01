@@ -25,7 +25,7 @@ func (r ResourceMeta) APIVersion() string {
 
 func (c *Client) Discover() ([]ResourceMeta, error) {
 	apiResources, err := discovery.ServerPreferredResources(c.discovery)
-	if err != nil {
+	if err != nil && len(apiResources) == 0 {
 		return nil, err
 	}
 

@@ -30,13 +30,19 @@ pkg/
 |---|---|---|
 | **Browser** | ↑↓/PgUp/PgDn/Home/End | 导航资源类型列表（按 category 分组） |
 | | Enter | 进入资源实例列表 |
+| | `n` | 打开命名空间选择器 |
 | | ESC/Ctrl+C | 退出 |
+| **Namespace** | ↑↓/PgUp/PgDn/Home/End | 导航 |
+| | Enter | 选中命名空间（all 表示所有） |
+| | `/` | 实时过滤 |
+| | ESC | 返回 Browser |
 | **List** | ↑↓/PgUp/PgDn/Home/End | 导航 |
 | | Enter | 查看 YAML/Describe |
 | | `/` | 实时过滤（匹配任意列） |
 | | `x` | 删除（确认 y/N） |
 | | `l` | Pod 日志流（auto-follow） |
 | | `s` | 进入容器 Shell |
+| | `n` | 快速切换命名空间（同 Browser） |
 | **Detail** | ↑↓/PgUp/PgDn/Home/End | 滚动 |
 | | `d` | 切换 YAML/Describe |
 | | `e` | 编辑 YAML（外部 $EDITOR） |
@@ -63,7 +69,6 @@ pkg/
 
 ## 未实现 / 计划中
 
-- 命名空间切换（当前 List(namespaceAll)）
 - 端口转发
 - 资源 YAML 编辑（已有）但不支持资源创建
 - 多容器选择（日志/Shell 默认用第一个容器）

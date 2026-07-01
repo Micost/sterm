@@ -12,7 +12,6 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 )
@@ -28,6 +27,7 @@ const (
 	pageList
 	pageDetail
 	pageLogs
+	pageNamespace
 )
 
 type listPageState struct {
@@ -79,6 +79,15 @@ type App struct {
 	// log page
 	log *logPageState
 
+	// namespace picker
+	namespace  string   // "" = all namespaces
+	namespaces []string
+	nsCursor   int
+	nsOffset   int
+	nsFilter   string
+	nsFilterOn bool
+	nsPrevPage page     // page to return to on ESC
+
 	curr    page
 	width   int
 	height  int
@@ -117,7 +126,7 @@ func (a *App) Run() error {
 func (a *App) loadList() {
 	ns := ""
 	if a.list.meta.Namespaced {
-		ns = metav1.NamespaceAll
+		ns = a.namespace
 	}
 	data, err := a.client.List(context.Background(), a.list.meta.GVR, ns)
 	if err != nil {
@@ -138,6 +147,25 @@ func (a *App) loadResources() {
 		a.resources = rr
 		a.bReady = true
 	}
+	a.render()
+}
+
+func (a *App) enterNamespacePicker() {
+	a.nsPrevPage = a.curr
+	a.curr = pageNamespace
+	a.nsCursor = 0
+	a.nsOffset = 0
+	a.nsFilter = ""
+	a.nsFilterOn = false
+	go a.loadNamespaces()
+}
+
+func (a *App) loadNamespaces() {
+	nss, err := a.client.Namespaces(context.Background())
+	if err != nil {
+		return
+	}
+	a.namespaces = nss
 	a.render()
 }
 
@@ -173,6 +201,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleDetailKey(e)
 	case pageLogs:
 		a.handleLogKey(e)
+	case pageNamespace:
+		a.handleNamespaceKey(e)
 	}
 	a.render()
 }
@@ -218,6 +248,10 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		a.selected = 0
 	case tcell.KeyEnd:
 		a.selected = len(a.resources) - 1
+	case tcell.KeyRune:
+		if e.Rune() == 'n' || e.Rune() == 'N' {
+			a.enterNamespacePicker()
+		}
 	}
 }
 
@@ -269,6 +303,8 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 				row := rows[a.list.selected]
 				a.execShell(row)
 			}
+		} else if e.Rune() == 'n' || e.Rune() == 'N' {
+			a.enterNamespacePicker()
 		}
 	case tcell.KeyUp:
 		rows := a.visibleRows()
@@ -689,6 +725,102 @@ func (a *App) editResource() {
 	a.render()
 }
 
+func (a *App) handleNamespaceKey(e *tcell.EventKey) {
+	if a.nsFilterOn {
+		switch e.Key() {
+		case tcell.KeyEscape:
+			a.nsFilter = ""
+			a.nsFilterOn = false
+			a.nsCursor = 0
+		case tcell.KeyEnter:
+			a.nsFilterOn = false
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			if len(a.nsFilter) > 0 {
+				a.nsFilter = a.nsFilter[:len(a.nsFilter)-1]
+			}
+			a.nsCursor = 0
+		case tcell.KeyRune:
+			a.nsFilter += string(e.Rune())
+			a.nsCursor = 0
+		}
+		return
+	}
+
+	switch e.Key() {
+	case tcell.KeyEscape, tcell.KeyCtrlC:
+		a.curr = a.nsPrevPage
+	case tcell.KeyEnter:
+		items := a.nsFilteredItems()
+		if a.nsCursor >= 0 && a.nsCursor < len(items) {
+			a.namespace = items[a.nsCursor]
+			a.curr = pageBrowser
+		}
+	case tcell.KeyUp:
+		if a.nsCursor > 0 {
+			a.nsCursor--
+		}
+	case tcell.KeyDown:
+		if a.nsCursor < a.nsFilteredCount()-1 {
+			a.nsCursor++
+		}
+	case tcell.KeyPgUp:
+		a.nsCursor -= a.visibleRows()
+		if a.nsCursor < 0 {
+			a.nsCursor = 0
+		}
+	case tcell.KeyPgDn:
+		a.nsCursor += a.visibleRows()
+		if max := a.nsFilteredCount() - 1; a.nsCursor > max {
+			a.nsCursor = max
+		}
+	case tcell.KeyHome:
+		a.nsCursor = 0
+	case tcell.KeyEnd:
+		a.nsCursor = a.nsFilteredCount() - 1
+	case tcell.KeyRune:
+		if e.Rune() == '/' {
+			a.nsFilter = ""
+			a.nsFilterOn = true
+		}
+	}
+}
+
+func (a *App) nsFilteredCount() int {
+	if a.nsFilter == "" {
+		return len(a.namespaces) + 1 // +1 for "all"
+	}
+	f := strings.ToLower(a.nsFilter)
+	count := 1 // "all" always shown
+	for _, ns := range a.namespaces {
+		if strings.Contains(strings.ToLower(ns), f) {
+			count++
+		}
+	}
+	return count
+}
+
+func (a *App) nsFilteredItems() []string {
+	items := []string{""} // "all"
+	if a.nsFilter == "" {
+		items = append(items, a.namespaces...)
+		return items
+	}
+	f := strings.ToLower(a.nsFilter)
+	for _, ns := range a.namespaces {
+		if strings.Contains(strings.ToLower(ns), f) {
+			items = append(items, ns)
+		}
+	}
+	return items
+}
+
+func (a *App) nsDisplayName(ns string) string {
+	if ns == "" {
+		return "all"
+	}
+	return ns
+}
+
 func (a *App) quit() {
 	close(a.done)
 }
@@ -705,9 +837,87 @@ func (a *App) render() {
 		a.renderDetail()
 	case pageLogs:
 		a.renderLogs()
+	case pageNamespace:
+		a.renderNamespace()
 	}
 
 	a.screen.Show()
+}
+
+// --- namespace picker ---
+
+func (a *App) renderNamespace() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	// header
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	a.fillLine(0, 0, ' ', headerStyle)
+	title := " NAMESPACES"
+	if a.nsFilterOn {
+		title = fmt.Sprintf(" [/] %s_", a.nsFilter)
+	} else if a.nsFilter != "" {
+		title = fmt.Sprintf(" [/] %s", a.nsFilter)
+	}
+	a.drawText(1, 0, title, headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	items := a.nsFilteredItems()
+	maxRows := a.visibleRows()
+
+	if a.nsCursor < a.nsOffset {
+		a.nsOffset = a.nsCursor
+	}
+	if a.nsCursor >= a.nsOffset+maxRows {
+		a.nsOffset = a.nsCursor - maxRows + 1
+	}
+
+	prevCat := ""
+	line := 2
+	for i := a.nsOffset; i < len(items) && line < a.height-1; i++ {
+		ns := items[i]
+		display := a.nsDisplayName(ns)
+
+		cat := "namespaces"
+		if ns == "" {
+			cat = "all"
+		}
+		if cat != prevCat && prevCat != "" {
+			if line < a.height-1 {
+				a.fillLine(0, line, '·', sepStyle)
+				line++
+			}
+		}
+		prevCat = cat
+
+		if line >= a.height-1 {
+			break
+		}
+
+		rowStyle := style
+		if i == a.nsCursor {
+			rowStyle = style.
+				Foreground(tcell.ColorBlack).
+				Background(tcell.ColorWhite)
+		}
+
+		a.fillLine(0, line, ' ', rowStyle)
+		mark := " "
+		if ns == a.namespace {
+			mark = "✓"
+		}
+		a.drawText(1, line, fmt.Sprintf("%s %-50s", mark, display), rowStyle)
+		line++
+	}
+
+	// footer
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+	info := fmt.Sprintf(" ↑↓:nav  Enter:select  /:filter  ESC:back  [%d/%d]", a.nsCursor+1, len(items))
+	a.drawText(1, a.height-1, info, footerStyle)
 }
 
 // --- browser ---
@@ -784,7 +994,8 @@ func (a *App) renderBrowser() {
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 	total := len(a.resources)
-	info := fmt.Sprintf(" ↑↓:nav  Enter:list  ESC:quit  [%d/%d]", a.selected+1, total)
+	ns := a.nsDisplayName(a.namespace)
+	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  ESC:quit  [%d/%d]", ns, a.selected+1, total)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
@@ -808,6 +1019,12 @@ func (a *App) renderList() {
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
 	x := 1
+	ns := a.nsDisplayName(a.namespace)
+	if a.list.meta.Namespaced {
+		nsTag := fmt.Sprintf("ns:%s  ", ns)
+		a.drawText(x, 0, nsTag, headerStyle)
+		x += len(nsTag)
+	}
 	for ci, col := range a.list.data.Columns {
 		w := columnWidth(a.list.data.Columns, ci)
 		fmtStr := fmt.Sprintf("%%-%ds", w)
@@ -882,7 +1099,8 @@ func (a *App) renderList() {
 		}
 		info = fmt.Sprintf(" Delete %s? (y/N)", name)
 	} else {
-		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  s:shell  ESC:back  [%d/%d] %s", sel, total, filterInfo)
+		ns := a.nsDisplayName(a.namespace)
+		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  s:shell n:ns(%s) ESC:back  [%d/%d] %s", ns, sel, total, filterInfo)
 	}
 	a.drawText(1, a.height-1, info, footerStyle)
 }
