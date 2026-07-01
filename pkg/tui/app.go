@@ -101,7 +101,7 @@ type App struct {
 }
 
 func NewApp(client *k8s.Client) *App {
-	return &App{client: client, done: make(chan struct{})}
+	return &App{client: client, done: make(chan struct{}), namespace: "default"}
 }
 
 func (a *App) Run() error {
@@ -1122,6 +1122,9 @@ func (a *App) renderBrowser() {
 	for y := 0; y < a.height-1; y++ {
 		a.screen.SetContent(sepCol, y, '│', nil, sepStyle)
 	}
+	// namespace indicator on right side header
+	nsLabel := fmt.Sprintf(" ns: %s ", a.nsDisplayName(a.namespace))
+	a.drawText(sepCol+1, 1, nsLabel, style)
 
 	rows := a.visibleRows()
 	if a.selected < a.offset {
