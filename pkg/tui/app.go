@@ -8,6 +8,7 @@ import (
 	"github.com/Micost/sterm/pkg/k8s"
 
 	"github.com/gdamore/tcell/v2"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -16,6 +17,7 @@ type page int
 const (
 	pageBrowser page = iota
 	pageList
+	pageDetail
 )
 
 type listPageState struct {
@@ -25,6 +27,15 @@ type listPageState struct {
 	offset   int
 	filter   string
 	filterOn bool
+}
+
+type detailPageState struct {
+	obj      *unstructured.Unstructured
+	yamlText string
+	descText string
+	showYAML bool
+	scroll   int
+	err      error
 }
 
 type App struct {
@@ -39,6 +50,9 @@ type App struct {
 
 	// list page
 	list *listPageState
+
+	// detail page
+	detail *detailPageState
 
 	curr    page
 	width   int
@@ -128,6 +142,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleBrowserKey(e)
 	case pageList:
 		a.handleListKey(e)
+	case pageDetail:
+		a.handleDetailKey(e)
 	}
 	a.render()
 }
@@ -183,6 +199,12 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.curr = pageBrowser
 		a.list = nil
+	case tcell.KeyEnter:
+		rows := a.filteredRows()
+		if a.list.selected >= 0 && a.list.selected < len(rows) {
+			row := rows[a.list.selected]
+			a.openDetail(row)
+		}
 	case tcell.KeyRune:
 		if e.Rune() == '/' {
 			a.list.filter = ""
@@ -217,6 +239,66 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 	case tcell.KeyEnd:
 		a.list.selected = a.filteredCount() - 1
 	}
+}
+
+func (a *App) handleDetailKey(e *tcell.EventKey) {
+	if a.detail == nil {
+		return
+	}
+
+	switch e.Key() {
+	case tcell.KeyEscape, tcell.KeyCtrlC:
+		a.detail = nil
+		a.curr = pageList
+	case tcell.KeyUp:
+		if a.detail.scroll > 0 {
+			a.detail.scroll--
+		}
+	case tcell.KeyDown:
+		max := a.detailLines()
+		if a.detail.scroll < max {
+			a.detail.scroll++
+		}
+	case tcell.KeyPgUp:
+		a.detail.scroll -= a.visibleRows()
+		if a.detail.scroll < 0 {
+			a.detail.scroll = 0
+		}
+	case tcell.KeyPgDn:
+		a.detail.scroll += a.visibleRows()
+		if max := a.detailLines(); a.detail.scroll > max {
+			a.detail.scroll = max
+		}
+	case tcell.KeyHome:
+		a.detail.scroll = 0
+	case tcell.KeyEnd:
+		a.detail.scroll = a.detailLines()
+	case tcell.KeyRune:
+		if e.Rune() == 'd' || e.Rune() == 'D' {
+			a.detail.showYAML = !a.detail.showYAML
+			a.detail.scroll = 0
+		}
+	}
+}
+
+func (a *App) detailLines() int {
+	if a.detail == nil {
+		return 0
+	}
+	text := a.detail.descText
+	if a.detail.showYAML {
+		text = a.detail.yamlText
+	}
+	if text == "" {
+		return 0
+	}
+	lines := 0
+	for _, ch := range text {
+		if ch == '\n' {
+			lines++
+		}
+	}
+	return lines
 }
 
 func (a *App) handleFilterKey(e *tcell.EventKey) {
@@ -286,6 +368,23 @@ func (a *App) visibleRows() int {
 	return a.height - 3
 }
 
+func (a *App) openDetail(row k8s.TableRow) {
+	yamlText, err := k8s.ToYAML(row.Obj)
+	if err != nil {
+		a.detail = &detailPageState{err: err}
+		a.curr = pageDetail
+		return
+	}
+
+	a.detail = &detailPageState{
+		obj:      row.Obj,
+		yamlText: yamlText,
+		descText: k8s.Describe(row.Obj),
+		showYAML: true,
+	}
+	a.curr = pageDetail
+}
+
 func (a *App) quit() {
 	close(a.done)
 }
@@ -298,6 +397,8 @@ func (a *App) render() {
 		a.renderBrowser()
 	case pageList:
 		a.renderList()
+	case pageDetail:
+		a.renderDetail()
 	}
 
 	a.screen.Show()
@@ -468,6 +569,84 @@ func (a *App) renderList() {
 	}
 	info := fmt.Sprintf(" ↑↓:nav  /:filter  ESC:back  [%d/%d] %s", sel, total, filterInfo)
 	a.drawText(1, a.height-1, info, footerStyle)
+}
+
+// --- detail ---
+
+func (a *App) renderDetail() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	if a.detail == nil || a.detail.err != nil {
+		msg := "Error loading detail"
+		if a.detail != nil && a.detail.err != nil {
+			msg = fmt.Sprintf("Error: %v", a.detail.err)
+		}
+		a.drawText(a.width/2-len(msg)/2, a.height/2, msg, style)
+		return
+	}
+
+	text := a.detail.descText
+	mode := "DESCRIBE"
+	if a.detail.showYAML {
+		text = a.detail.yamlText
+		mode = "YAML"
+	}
+
+	lines := splitLines(text)
+
+	// header
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	name := a.detail.obj.GetName()
+	kind := a.detail.obj.GetKind()
+	title := fmt.Sprintf(" %s/%s [%s]  d:toggle", kind, name, mode)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, title, headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	// content area
+	contentLines := a.height - 3
+
+	if a.detail.scroll > len(lines)-contentLines {
+		a.detail.scroll = len(lines) - contentLines
+	}
+	if a.detail.scroll < 0 {
+		a.detail.scroll = 0
+	}
+
+	for line := 0; line < contentLines && line+a.detail.scroll < len(lines); line++ {
+		idx := line + a.detail.scroll
+		a.drawText(0, 2+line, lines[idx], style)
+	}
+
+	// footer
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+
+	total := len(lines)
+	info := fmt.Sprintf(" ↑↓:nav  d:toggle  ESC:back  [%d/%d]", a.detail.scroll+1, total)
+	a.drawText(1, a.height-1, info, footerStyle)
+}
+
+func splitLines(s string) []string {
+	if s == "" {
+		return []string{""}
+	}
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start <= len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }
 
 // --- helpers ---

@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/yaml"
 )
 
 type TableRow struct {
@@ -119,6 +120,22 @@ func age(t metav1.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+func (c *Client) Get(ctx context.Context, gvr schema.GroupVersionResource, ns, name string) (*unstructured.Unstructured, error) {
+	cli := c.dynamic.Resource(gvr)
+	if ns != "" {
+		return cli.Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	}
+	return cli.Get(ctx, name, metav1.GetOptions{})
+}
+
+func ToYAML(u *unstructured.Unstructured) (string, error) {
+	raw, err := yaml.Marshal(u.Object)
+	if err != nil {
+		return "", fmt.Errorf("marshal yaml: %w", err)
+	}
+	return string(raw), nil
 }
 
 func (c *Client) Namespaces(ctx context.Context) ([]string, error) {
