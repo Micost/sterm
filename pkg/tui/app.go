@@ -1148,7 +1148,7 @@ func (a *App) renderBrowser() {
 		}
 		if cat != prevCat && prevCat != "" {
 			if line < a.height-1 {
-				a.fillLine(0, line, '·', sepStyle)
+				a.fillLineTo(0, line, sepCol, '·', sepStyle)
 				line++
 			}
 		}
@@ -1165,16 +1165,19 @@ func (a *App) renderBrowser() {
 				Background(tcell.ColorWhite)
 		}
 
-		a.fillLine(0, line, ' ', rowStyle)
+		a.fillLineTo(0, line, sepCol, ' ', rowStyle)
 		ns := "✓"
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-20s %-25s %s", r.Kind, r.Name(), ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", kindW, r.Kind, resourceW, r.Name(), ns), rowStyle)
 		line++
 	}
 
-	// right pane: instance preview
+	// right pane: clear all rows then draw
+	for y := 2; y < a.height-1; y++ {
+		a.fillLineTo(sepCol+1, y, a.width, ' ', style)
+	}
 	if a.previewData != nil && rightW >= 10 {
 		maxRows := a.height - 3
 		for i := 0; i < maxRows && i < len(a.previewData.Rows); i++ {
@@ -1422,6 +1425,15 @@ func truncate(s string, max int) string {
 
 func (a *App) fillLine(x, y int, ch rune, style tcell.Style) {
 	for i := x; i < a.width; i++ {
+		a.screen.SetContent(i, y, ch, nil, style)
+	}
+}
+
+func (a *App) fillLineTo(x, y, end int, ch rune, style tcell.Style) {
+	if end > a.width {
+		end = a.width
+	}
+	for i := x; i < end; i++ {
 		a.screen.SetContent(i, y, ch, nil, style)
 	}
 }
