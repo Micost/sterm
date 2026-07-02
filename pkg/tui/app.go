@@ -189,10 +189,14 @@ func (a *App) browserList() []k8s.ResourceMeta {
 		}
 		return out
 	}
+	seen := make(map[schema.GroupVersionResource]bool)
 	out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
-	out = append(out, a.recent...)
+	for _, r := range a.recent {
+		seen[r.GVR] = true
+		out = append(out, r)
+	}
 	for _, r := range a.resources {
-		if r.Category == "common" {
+		if r.Category == "common" && !seen[r.GVR] {
 			out = append(out, r)
 		}
 	}
@@ -1195,23 +1199,25 @@ func (a *App) renderBrowser() {
 
 	a.offset = 0
 
-	prevCat := ""
+	help := []string{
+		"  j/k  ↑↓    Navigate",
+		"  Enter        List resources",
+		"  /            Search",
+		"  n            Namespace",
+		"  ESC          Quit",
+	}
+	contentRows := a.height - 2 - len(help) - 1 // header+sep, help, footer
+	if contentRows < 3 {
+		contentRows = 3
+	}
+
 	line := 2
-	for i := 0; i < total && line < a.height-1; i++ {
+	maxItems := contentRows
+	if total < maxItems {
+		maxItems = total
+	}
+	for i := 0; i < maxItems && line <= 2+contentRows; i++ {
 		r := &items[i]
-
-		cat := r.Category
-		if cat != prevCat && prevCat != "" {
-			if line < a.height-1 {
-				a.fillLineTo(0, line, sepCol, '·', sepStyle)
-				line++
-			}
-		}
-		prevCat = cat
-
-		if line >= a.height-1 {
-			break
-		}
 
 		rowStyle := style
 		if i == a.selected {
@@ -1229,12 +1235,12 @@ func (a *App) renderBrowser() {
 		line++
 	}
 
-	// right pane: clear all rows then draw
-	for y := 2; y < a.height-1; y++ {
+	// right pane: clear then draw preview (same height as left)
+	for y := 2; y < 2+contentRows; y++ {
 		a.fillLineTo(sepCol+1, y, a.width, ' ', style)
 	}
 	if a.previewData != nil && rightW >= 10 {
-		maxRows := a.height - 3
+		maxRows := contentRows
 		for i := 0; i < maxRows && i < len(a.previewData.Rows); i++ {
 			row := a.previewData.Rows[i]
 			rowY := 2 + i
@@ -1249,10 +1255,19 @@ func (a *App) renderBrowser() {
 			}
 		}
 	} else if a.previewData == nil && a.previewErr == nil && rightW >= 10 {
-		if a.selected < total {
+		if a.selected < maxItems {
 			r := items[a.selected]
 			a.drawText(sepCol+2, 2, fmt.Sprintf("Loading %s...", r.Name()), style)
 		}
+	}
+
+	// help text on left, blank on right
+	helpStyle := style.Foreground(tcell.ColorGray)
+	for hi, h := range help {
+		y := 2 + contentRows + hi
+		a.fillLineTo(0, y, sepCol, ' ', helpStyle)
+		a.drawText(1, y, h, helpStyle)
+		a.fillLineTo(sepCol+1, y, a.width, ' ', style)
 	}
 
 	footerStyle := style.Foreground(tcell.ColorGray)
@@ -1264,7 +1279,7 @@ func (a *App) renderBrowser() {
 	} else if a.browserFilter != "" {
 		filterInfo = fmt.Sprintf(" [/] %s", a.browserFilter)
 	}
-	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  /:filter  ESC:quit%s", ns, filterInfo)
+	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  /:search  ESC:quit%s", ns, filterInfo)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
