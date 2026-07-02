@@ -290,6 +290,10 @@ func (a *App) eventLoop() {
 }
 
 func (a *App) handleKey(e *tcell.EventKey) {
+	if e.Key() == tcell.KeyCtrlQ || e.Key() == tcell.KeyCtrlC {
+		a.quit()
+		return
+	}
 	switch a.curr {
 	case pageBrowser:
 		a.handleBrowserKey(e)
@@ -320,8 +324,8 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 
 	total := a.visibleBrowser()
 	switch e.Key() {
-	case tcell.KeyEscape, tcell.KeyCtrlC:
-		a.quit()
+	case tcell.KeyEscape:
+		// top level, no-op
 	case tcell.KeyEnter:
 		if !a.bReady || total == 0 {
 			return
@@ -1201,7 +1205,7 @@ func (a *App) renderBrowser() {
 
 	a.offset = 0
 
-	helpKeys := []string{"j/k", "Enter", "/", "n", "ESC"}
+	helpKeys := []string{"j/k", "Enter", "/", "n", "Ctrl+Q"}
 	helpDesc := []string{"Navigate", "List resources", "Search", "Namespace", "Quit"}
 	contentRows := a.height - 2 - len(helpKeys) - 1 // header+sep, help, footer
 	if contentRows < 3 {
