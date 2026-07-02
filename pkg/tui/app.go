@@ -384,21 +384,14 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 	switch e.Key() {
 	case tcell.KeyEscape:
-		a.browserFilter = ""
-		a.browserFilterOn = false
+		if a.browserFilter != "" {
+			a.browserFilter = ""
+		} else {
+			a.browserFilterOn = false
+		}
 		a.selected = 0
 	case tcell.KeyEnter:
 		a.browserFilterOn = false
-		items := a.browserList()
-		if a.selected >= len(items) {
-			return
-		}
-		r := items[a.selected]
-		a.addRecent(r)
-		a.list = &listPageState{meta: r}
-		a.curr = pageList
-		go a.loadList()
-		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(a.browserFilter) > 0 {
 			a.browserFilter = a.browserFilter[:len(a.browserFilter)-1]
@@ -1177,15 +1170,18 @@ func (a *App) renderBrowser() {
 	sepCol := a.width / 2
 	leftW := sepCol - 1
 	rightW := a.width - sepCol - 1
-	kindW := 16
-	resourceW := leftW - kindW - 4 // reserve " NS" + padding
-	if resourceW < 10 {
-		resourceW = 10
+	resW := 20
+	shortW := leftW - resW - 4
+	if shortW < 6 {
+		shortW = 6
+	}
+	if shortW > 16 {
+		shortW = 16
 	}
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	title := fmt.Sprintf("%-*s %-*s %s", kindW, "NAME", resourceW, "RESOURCE", "NS")
+	title := fmt.Sprintf("%-*s %-*s %s", resW, "RESOURCE", shortW, "SHORT", "NS")
 	if a.browserFilterOn {
 		title = fmt.Sprintf(" [/] %s_", a.browserFilter)
 	} else if a.browserFilter != "" {
@@ -1241,7 +1237,7 @@ func (a *App) renderBrowser() {
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", kindW, r.Name(), resourceW, r.GVR.Resource, ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", resW, r.GVR.Resource, shortW, r.ShortName, ns), rowStyle)
 		line++
 	}
 
