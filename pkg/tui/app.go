@@ -1199,7 +1199,7 @@ func (a *App) renderBrowser() {
 
 	a.offset = 0
 
-	helpKeys := []string{"j/k  ↑↓", "Enter", "/", "n", "ESC"}
+	helpKeys := []string{"j/k", "Enter", "/", "n", "ESC"}
 	helpDesc := []string{"Navigate", "List resources", "Search", "Namespace", "Quit"}
 	contentRows := a.height - 2 - len(helpKeys) - 1 // header+sep, help, footer
 	if contentRows < 3 {
@@ -1261,7 +1261,7 @@ func (a *App) renderBrowser() {
 	for hi := range helpKeys {
 		y := 2 + contentRows + hi
 		a.fillLineTo(0, y, sepCol, ' ', helpStyle)
-		a.drawText(1, y, fmt.Sprintf("  %-10s %s", helpKeys[hi], helpDesc[hi]), helpStyle)
+		a.drawText(1, y, fmt.Sprintf("  %-12s %s", helpKeys[hi], helpDesc[hi]), helpStyle)
 		a.fillLineTo(sepCol+1, y, a.width, ' ', style)
 	}
 
