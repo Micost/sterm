@@ -1199,14 +1199,9 @@ func (a *App) renderBrowser() {
 
 	a.offset = 0
 
-	help := []string{
-		"  j/k  ↑↓    Navigate",
-		"  Enter        List resources",
-		"  /            Search",
-		"  n            Namespace",
-		"  ESC          Quit",
-	}
-	contentRows := a.height - 2 - len(help) - 1 // header+sep, help, footer
+	helpKeys := []string{"j/k  ↑↓", "Enter", "/", "n", "ESC"}
+	helpDesc := []string{"Navigate", "List resources", "Search", "Namespace", "Quit"}
+	contentRows := a.height - 2 - len(helpKeys) - 1 // header+sep, help, footer
 	if contentRows < 3 {
 		contentRows = 3
 	}
@@ -1263,10 +1258,10 @@ func (a *App) renderBrowser() {
 
 	// help text on left, blank on right
 	helpStyle := style.Foreground(tcell.ColorGray)
-	for hi, h := range help {
+	for hi := range helpKeys {
 		y := 2 + contentRows + hi
 		a.fillLineTo(0, y, sepCol, ' ', helpStyle)
-		a.drawText(1, y, h, helpStyle)
+		a.drawText(1, y, fmt.Sprintf("  %-10s %s", helpKeys[hi], helpDesc[hi]), helpStyle)
 		a.fillLineTo(sepCol+1, y, a.width, ' ', style)
 	}
 
