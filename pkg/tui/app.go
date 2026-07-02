@@ -389,7 +389,16 @@ func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 		a.selected = 0
 	case tcell.KeyEnter:
 		a.browserFilterOn = false
-		_ = a.visibleBrowser()
+		items := a.browserList()
+		if a.selected >= len(items) {
+			return
+		}
+		r := items[a.selected]
+		a.addRecent(r)
+		a.list = &listPageState{meta: r}
+		a.curr = pageList
+		go a.loadList()
+		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(a.browserFilter) > 0 {
 			a.browserFilter = a.browserFilter[:len(a.browserFilter)-1]
