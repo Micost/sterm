@@ -384,22 +384,40 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 	switch e.Key() {
 	case tcell.KeyEscape:
-		if a.browserFilter != "" {
-			a.browserFilter = ""
-		} else {
-			a.browserFilterOn = false
-		}
+		a.browserFilter = ""
 		a.selected = 0
 	case tcell.KeyEnter:
 		a.browserFilterOn = false
+	case tcell.KeyUp:
+		if a.selected > 0 {
+			a.selected--
+		}
+	case tcell.KeyDown:
+		items := a.browserList()
+		if a.selected < len(items)-1 {
+			a.selected++
+		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(a.browserFilter) > 0 {
 			a.browserFilter = a.browserFilter[:len(a.browserFilter)-1]
 		}
 		a.selected = 0
+		a.loadPreview()
 	case tcell.KeyRune:
-		a.browserFilter += string(e.Rune())
-		a.selected = 0
+		switch e.Rune() {
+		case 'k', 'K':
+			if a.selected > 0 {
+				a.selected--
+			}
+		case 'j', 'J':
+			items := a.browserList()
+			if a.selected < len(items)-1 {
+				a.selected++
+			}
+		default:
+			a.browserFilter += string(e.Rune())
+			a.selected = 0
+		}
 	}
 	a.loadPreview()
 }
@@ -1170,14 +1188,28 @@ func (a *App) renderBrowser() {
 	sepCol := a.width / 2
 	leftW := sepCol - 1
 	rightW := a.width - sepCol - 1
-	resW := 20
+
+	// compute dynamic column widths
+	resW := 12
 	shortW := leftW - resW - 4
+	if shortW < 6 {
+		shortW = 6
+	}
+	for _, r := range items {
+		if len(r.GVR.Resource) > resW {
+			resW = len(r.GVR.Resource)
+		}
+	}
+	resW += 3 // padding
+	shortW = leftW - resW - 4
 	if shortW < 6 {
 		shortW = 6
 	}
 	if shortW > 16 {
 		shortW = 16
 	}
+
+	nameW := rightW - 16
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
@@ -1188,7 +1220,7 @@ func (a *App) renderBrowser() {
 		title = fmt.Sprintf(" [/] %s", a.browserFilter)
 	}
 	a.drawText(1, 0, title, headerStyle)
-	nameW := rightW - 16 // reserve " STATUS"
+	nameW = rightW - 16 // reserve " STATUS"
 	if nameW < 10 {
 		nameW = rightW
 	}
