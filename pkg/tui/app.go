@@ -183,7 +183,9 @@ func (a *App) browserList() []k8s.ResourceMeta {
 		out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
 		out = append(out, a.recent...)
 		for _, r := range a.resources {
-			if strings.Contains(strings.ToLower(r.Kind), f) || strings.Contains(strings.ToLower(r.Name()), f) {
+			if strings.Contains(strings.ToLower(r.Kind), f) ||
+				strings.Contains(strings.ToLower(r.Name()), f) ||
+				strings.Contains(strings.ToLower(r.GVR.Resource), f) {
 				out = append(out, r)
 			}
 		}
@@ -1170,7 +1172,7 @@ func (a *App) renderBrowser() {
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	title := fmt.Sprintf("%-*s %-*s %s", kindW, "KIND", resourceW, "RESOURCE", "NS")
+	title := fmt.Sprintf("%-*s %-*s %s", kindW, "NAME", resourceW, "RESOURCE", "NS")
 	if a.browserFilterOn {
 		title = fmt.Sprintf(" [/] %s_", a.browserFilter)
 	} else if a.browserFilter != "" {
@@ -1226,7 +1228,7 @@ func (a *App) renderBrowser() {
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", kindW, r.Kind, resourceW, r.Name(), ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", kindW, r.Name(), resourceW, r.GVR.Resource, ns), rowStyle)
 		line++
 	}
 

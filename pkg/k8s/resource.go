@@ -10,11 +10,15 @@ import (
 type ResourceMeta struct {
 	GVR        schema.GroupVersionResource
 	Kind       string
+	ShortName  string
 	Namespaced bool
 	Category   string
 }
 
 func (r ResourceMeta) Name() string {
+	if r.ShortName != "" {
+		return r.ShortName
+	}
 	return r.GVR.Resource
 }
 
@@ -63,10 +67,15 @@ func (c *Client) Discover() ([]ResourceMeta, error) {
 				}
 				seen[key] = true
 
+				shortName := ""
+				if len(r.ShortNames) > 0 {
+					shortName = r.ShortNames[0]
+				}
 				cat := category(gvr)
 				out = append(out, ResourceMeta{
 					GVR:        gvr,
 					Kind:       r.Kind,
+					ShortName:  shortName,
 					Namespaced: r.Namespaced,
 					Category:   cat,
 				})
