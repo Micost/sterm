@@ -2,12 +2,13 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - env GOTOOLCHAIN=local go mod tidy
 
 builds:
   - id: sterm
     env:
       - CGO_ENABLED=0
+      - GOTOOLCHAIN=local
     goos:
       - linux
       - darwin
