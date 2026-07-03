@@ -28,7 +28,15 @@ const (
 	pageDetail
 	pageLogs
 	pageNamespace
+	pageContainerPicker
 )
+
+type contPickState struct {
+	containers []string
+	cursor     int
+	action     string
+	podRow     k8s.TableRow
+}
 
 type listPageState struct {
 	meta          k8s.ResourceMeta
@@ -79,7 +87,8 @@ type App struct {
 	previewErr  error
 
 	// list page
-	list *listPageState
+	list    *listPageState
+	listErr string
 
 	// detail page
 	detail *detailPageState
@@ -95,6 +104,9 @@ type App struct {
 	nsFilter   string
 	nsFilterOn bool
 	nsPrevPage page     // page to return to on ESC
+
+	// container picker
+	contPick *contPickState
 
 	curr    page
 	width   int
@@ -258,6 +270,74 @@ func (a *App) enterNamespacePicker() {
 	go a.loadNamespaces()
 }
 
+func (a *App) pickContainer(row k8s.TableRow, action string) {
+	containers := a.client.PodContainers(row.Obj)
+	if len(containers) == 0 {
+		return
+	}
+	if len(containers) == 1 {
+		if action == "shell" {
+			a.execContainerShell(row, containers[0])
+		} else {
+			a.openContainerLogs(row, containers[0])
+		}
+		return
+	}
+	a.contPick = &contPickState{
+		containers: containers,
+		cursor:     0,
+		action:     action,
+		podRow:     row,
+	}
+	a.curr = pageContainerPicker
+}
+
+func (a *App) execContainerShell(row k8s.TableRow, container string) {
+	ns := row.Obj.GetNamespace()
+	pod := row.Obj.GetName()
+
+	a.screen.Suspend()
+
+	cmd := exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", container, "--", "sh")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+
+	a.screen.Resume()
+}
+
+func (a *App) openContainerLogs(row k8s.TableRow, container string) {
+	ns := row.Obj.GetNamespace()
+	podName := row.Obj.GetName()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.log = &logPageState{
+		ns:         ns,
+		podName:    podName,
+		container:  container,
+		maxLines:   2000,
+		autoScroll: true,
+		cancel:     cancel,
+	}
+	a.curr = pageLogs
+
+	go func() {
+		ch, err := a.client.StreamLogs(ctx, ns, podName, container, 200)
+		if err != nil {
+			a.log.lines = append(a.log.lines, fmt.Sprintf("error: %v", err))
+			a.screen.PostEvent(&renderEvent{})
+			return
+		}
+		for line := range ch {
+			a.log.lines = append(a.log.lines, line)
+			if len(a.log.lines) > a.log.maxLines {
+				a.log.lines = a.log.lines[len(a.log.lines)-a.log.maxLines:]
+			}
+		}
+	}()
+}
+
 func (a *App) loadNamespaces() {
 	nss, err := a.client.Namespaces(context.Background())
 	if err != nil {
@@ -305,6 +385,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleLogKey(e)
 	case pageNamespace:
 		a.handleNamespaceKey(e)
+	case pageContainerPicker:
+		a.handleContainerPickerKey(e)
 	}
 	a.render()
 }
@@ -432,6 +514,7 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 	if a.list == nil || a.list.data == nil {
 		return
 	}
+	a.listErr = ""
 
 	if a.list.filterOn {
 		a.handleFilterKey(e)
@@ -469,16 +552,40 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
-				a.openLogs(row)
+				if row.Obj.GetKind() == "Pod" {
+					a.pickContainer(row, "logs")
+				} else {
+					a.openLogs(row)
+				}
 			}
 		case 's', 'S':
 			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
-				a.execShell(row)
+				if row.Obj.GetKind() == "Pod" {
+					a.pickContainer(row, "shell")
+				} else {
+					a.execShell(row)
+				}
 			}
 		case 'n', 'N':
 			a.enterNamespacePicker()
+		case 'd', 'D':
+			rows := a.filteredRows()
+			if a.list.selected >= 0 && a.list.selected < len(rows) {
+				a.openDetailMode(rows[a.list.selected], false)
+			}
+		case 'y', 'Y':
+			rows := a.filteredRows()
+			if a.list.selected >= 0 && a.list.selected < len(rows) {
+				a.openDetailMode(rows[a.list.selected], true)
+			}
+		case 'e', 'E':
+			rows := a.filteredRows()
+			if a.list.selected >= 0 && a.list.selected < len(rows) {
+				a.openDetailMode(rows[a.list.selected], true)
+				a.editResource()
+			}
 		case 'k', 'K':
 			if a.list.selected > 0 {
 				a.list.selected--
@@ -696,6 +803,10 @@ func (a *App) visibleRows() int {
 }
 
 func (a *App) openDetail(row k8s.TableRow) {
+	a.openDetailMode(row, true)
+}
+
+func (a *App) openDetailMode(row k8s.TableRow, showYAML bool) {
 	yamlText, err := k8s.ToYAML(row.Obj)
 	if err != nil {
 		a.detail = &detailPageState{err: err}
@@ -709,7 +820,7 @@ func (a *App) openDetail(row k8s.TableRow) {
 		namespaced: a.list.meta.Namespaced,
 		yamlText:   yamlText,
 		descText:   k8s.Describe(row.Obj),
-		showYAML:   true,
+		showYAML:   showYAML,
 	}
 	a.curr = pageDetail
 }
@@ -934,14 +1045,17 @@ func (a *App) editResource() {
 
 	updatedObj := &unstructured.Unstructured{Object: updated}
 	if err := a.client.Update(context.Background(), a.detail.gvr, updatedObj); err != nil {
+		a.listErr = err.Error()
+		a.curr = pageList
+		a.render()
 		return
 	}
 
-	// refresh detail
-	yamlText, _ := k8s.ToYAML(updatedObj)
-	a.detail.obj = updatedObj
-	a.detail.yamlText = yamlText
-	a.detail.descText = k8s.Describe(updatedObj)
+	a.listErr = ""
+	a.curr = pageList
+	if a.list != nil {
+		go a.loadList()
+	}
 	a.render()
 }
 
@@ -973,7 +1087,12 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 		items := a.nsFilteredItems()
 		if a.nsCursor >= 0 && a.nsCursor < len(items) {
 			a.namespace = items[a.nsCursor]
-			a.curr = pageBrowser
+			a.curr = a.nsPrevPage
+			if a.curr == pageList {
+				go a.loadList()
+			} else if a.curr == pageBrowser {
+				go a.loadPreview()
+			}
 		}
 	case tcell.KeyUp:
 		if a.nsCursor > 0 {
@@ -1074,6 +1193,8 @@ func (a *App) render() {
 		a.renderLogs()
 	case pageNamespace:
 		a.renderNamespace()
+	case pageContainerPicker:
+		a.renderContainerPicker()
 	}
 
 	a.height++
@@ -1324,18 +1445,31 @@ func (a *App) renderList() {
 	rows := a.filteredRows()
 	_ = rows
 
+	colWs := make([]int, len(a.list.data.Columns))
+	for ci, col := range a.list.data.Columns {
+		colWs[ci] = len(col)
+	}
+	for _, row := range rows {
+		for ci, cell := range row.Cells {
+			if ci < len(colWs) && len(cell) > colWs[ci] {
+				colWs[ci] = len(cell)
+			}
+		}
+	}
+	for ci := range colWs {
+		minW := columnWidth(a.list.data.Columns, ci)
+		if colWs[ci] < minW {
+			colWs[ci] = minW
+		}
+		colWs[ci] += 2
+	}
+
 	// header
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
 	x := 1
-	ns := a.nsDisplayName(a.namespace)
-	if a.list.meta.Namespaced {
-		nsTag := fmt.Sprintf("ns:%s  ", ns)
-		a.drawText(x, 0, nsTag, headerStyle)
-		x += len(nsTag)
-	}
 	for ci, col := range a.list.data.Columns {
-		w := columnWidth(a.list.data.Columns, ci)
+		w := colWs[ci]
 		fmtStr := fmt.Sprintf("%%-%ds", w)
 		header := fmt.Sprintf(fmtStr, col)
 		a.drawText(x, 0, header, headerStyle)
@@ -1374,7 +1508,7 @@ func (a *App) renderList() {
 		a.fillLine(0, line, ' ', rowStyle)
 		x = 1
 		for ci, cell := range row.Cells {
-			w := columnWidth(a.list.data.Columns, ci)
+			w := colWs[ci]
 			fmtStr := fmt.Sprintf("%%-%ds", w)
 			text := fmt.Sprintf(fmtStr, truncate(cell, w))
 			a.drawText(x, line, text, rowStyle)
@@ -1409,9 +1543,15 @@ func (a *App) renderList() {
 		info = fmt.Sprintf(" Delete %s? (y/N)", name)
 	} else {
 		ns := a.nsDisplayName(a.namespace)
-		info = fmt.Sprintf(" ↑↓:nav  /:filter  x:delete  s:shell n:ns(%s) ESC:back  [%d/%d] %s", ns, sel, total, filterInfo)
+		info = fmt.Sprintf(" d:desc  y:yaml  e:edit  s:shell  l:logs  x:del  n:ns(%s)  ESC:back  [%d/%d] %s", ns, sel, total, filterInfo)
 	}
-	a.drawText(1, a.height-1, info, footerStyle)
+	if a.listErr != "" {
+		errStyle := style.Foreground(tcell.ColorRed)
+		a.drawText(1, a.height-2, a.listErr, errStyle)
+		a.drawText(1, a.height-1, info, footerStyle)
+	} else {
+		a.drawText(1, a.height-1, info, footerStyle)
+	}
 }
 
 // --- detail ---
@@ -1472,6 +1612,87 @@ func (a *App) renderDetail() {
 	total := len(lines)
 	info := fmt.Sprintf(" ↑↓:nav  d:toggle  s:shell  ESC:back  [%d/%d]", a.detail.scroll+1, total)
 	a.drawText(1, a.height-1, info, footerStyle)
+}
+
+// --- container picker ---
+
+func (a *App) renderContainerPicker() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	if a.contPick == nil {
+		return
+	}
+
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, fmt.Sprintf(" CONTAINERS  %s: %s/%s", a.contPick.action, a.contPick.podRow.Obj.GetNamespace(), a.contPick.podRow.Obj.GetName()), headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	line := 2
+	for i, c := range a.contPick.containers {
+		if line >= a.height-1 {
+			break
+		}
+		rowStyle := style
+		if i == a.contPick.cursor {
+			rowStyle = style.Foreground(tcell.ColorBlack).Background(tcell.ColorWhite)
+		}
+		a.fillLine(0, line, ' ', rowStyle)
+		a.drawText(1, line, fmt.Sprintf("  %s", c), rowStyle)
+		line++
+	}
+
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+	a.drawText(1, a.height-1, " ↑↓:nav  Enter:select  ESC:back", footerStyle)
+}
+
+func (a *App) handleContainerPickerKey(e *tcell.EventKey) {
+	if a.contPick == nil {
+		return
+	}
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.contPick = nil
+		a.curr = pageList
+	case tcell.KeyEnter:
+		idx := a.contPick.cursor
+		if idx >= 0 && idx < len(a.contPick.containers) {
+			c := a.contPick.containers[idx]
+			row := a.contPick.podRow
+			if a.contPick.action == "shell" {
+				a.contPick = nil
+				a.curr = pageList
+				a.execContainerShell(row, c)
+			} else {
+				a.contPick = nil
+				a.openContainerLogs(row, c)
+			}
+		}
+	case tcell.KeyUp:
+		if a.contPick.cursor > 0 {
+			a.contPick.cursor--
+		}
+	case tcell.KeyDown:
+		if a.contPick.cursor < len(a.contPick.containers)-1 {
+			a.contPick.cursor++
+		}
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'k', 'K':
+			if a.contPick.cursor > 0 {
+				a.contPick.cursor--
+			}
+		case 'j', 'J':
+			if a.contPick.cursor < len(a.contPick.containers)-1 {
+				a.contPick.cursor++
+			}
+		}
+	}
 }
 
 func splitLines(s string) []string {

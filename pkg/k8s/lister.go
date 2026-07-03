@@ -38,6 +38,20 @@ func (c *Client) List(ctx context.Context, gvr schema.GroupVersionResource, ns s
 	}
 
 	cols := []string{"NAME", "NAMESPACE", "KIND", "AGE", "STATUS"}
+
+	extraCol := ""
+	switch gvr.Resource {
+	case "pods":
+		extraCol = "NODE"
+	case "jobs":
+		extraCol = "COMPLETIONS"
+	case "deployments", "statefulsets", "daemonsets", "replicasets":
+		extraCol = "READY"
+	}
+	if extraCol != "" {
+		cols = append(cols, extraCol)
+	}
+
 	rows := make([]TableRow, 0, len(list.Items))
 
 	for i := range list.Items {
@@ -51,6 +65,22 @@ func (c *Client) List(ctx context.Context, gvr schema.GroupVersionResource, ns s
 		cells[3] = age
 
 		cells[4] = extractStatus(item)
+
+		if extraCol == "NODE" {
+			nodeName, _, _ := unstructured.NestedString(item.Object, "spec", "nodeName")
+			cells[5] = nodeName
+		} else if extraCol == "COMPLETIONS" {
+			succeeded, _, _ := unstructured.NestedInt64(item.Object, "status", "succeeded")
+			desired, _, _ := unstructured.NestedInt64(item.Object, "spec", "completions")
+			if desired == 0 {
+				desired = 1
+			}
+			cells[5] = fmt.Sprintf("%d/%d", succeeded, desired)
+		} else if extraCol == "READY" {
+			ready, _, _ := unstructured.NestedInt64(item.Object, "status", "readyReplicas")
+			desired, _, _ := unstructured.NestedInt64(item.Object, "spec", "replicas")
+			cells[5] = fmt.Sprintf("%d/%d", ready, desired)
+		}
 
 		rows = append(rows, TableRow{Cells: cells, Obj: item})
 	}

@@ -7,7 +7,7 @@ LDFLAGS ?= -s -w
 all: build
 
 build:
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN) .
+	CGO_ENABLED=0 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN) .
 
 run: build
 	./$(BIN)
