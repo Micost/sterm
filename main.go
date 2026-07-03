@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"os"
 
 	"github.com/Micost/sterm/pkg/k8s"
@@ -12,6 +14,12 @@ import (
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "show version")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("sterm %s (commit: %s, built: %s)\n", version, commit, date)
+		return
+	}
 	klog.LogToStderr(false)
 
 	kubeconfig := os.Getenv("KUBECONFIG")
