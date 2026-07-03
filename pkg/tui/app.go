@@ -29,6 +29,7 @@ const (
 	pageLogs
 	pageNamespace
 	pageContainerPicker
+	pageHelp
 )
 
 type contPickState struct {
@@ -107,6 +108,8 @@ type App struct {
 
 	// container picker
 	contPick *contPickState
+
+	helpPrevPage page
 
 	curr    page
 	width   int
@@ -387,6 +390,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleNamespaceKey(e)
 	case pageContainerPicker:
 		a.handleContainerPickerKey(e)
+	case pageHelp:
+		a.handleHelpKey(e)
 	}
 	a.render()
 }
@@ -459,6 +464,8 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.loadPreview()
 		case '/':
 			a.browserFilterOn = true
+		case '?':
+			a.showHelp()
 		}
 	}
 }
@@ -599,6 +606,8 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.list.selected = 0
 		case 'G':
 			a.list.selected = a.filteredCount() - 1
+		case '?':
+			a.showHelp()
 		}
 	case tcell.KeyUp:
 		if a.list.selected > 0 {
@@ -680,6 +689,8 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 			a.detail.scroll = 0
 		case 'G':
 			a.detail.scroll = a.detailLines()
+		case '?':
+			a.showHelp()
 		}
 	}
 }
@@ -922,6 +933,8 @@ func (a *App) handleLogKey(e *tcell.EventKey) {
 			a.log.scroll = 0
 		case 'G':
 			a.log.autoScroll = true
+		case '?':
+			a.showHelp()
 		}
 	}
 }
@@ -1133,6 +1146,8 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 			a.nsCursor = 0
 		case 'G':
 			a.nsCursor = a.nsFilteredCount() - 1
+		case '?':
+			a.showHelp()
 		}
 	}
 }
@@ -1195,6 +1210,8 @@ func (a *App) render() {
 		a.renderNamespace()
 	case pageContainerPicker:
 		a.renderContainerPicker()
+	case pageHelp:
+		a.renderHelp()
 	}
 
 	a.height++
@@ -1425,7 +1442,7 @@ func (a *App) renderBrowser() {
 	} else if a.browserFilter != "" {
 		filterInfo = fmt.Sprintf(" [/] %s", a.browserFilter)
 	}
-	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  /:search  ESC:quit%s", ns, filterInfo)
+	info := fmt.Sprintf(" ↑↓:nav  Enter:list  n:ns(%s)  /:search  ?:help  ESC:quit%s", ns, filterInfo)
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
@@ -1691,8 +1708,115 @@ func (a *App) handleContainerPickerKey(e *tcell.EventKey) {
 			if a.contPick.cursor < len(a.contPick.containers)-1 {
 				a.contPick.cursor++
 			}
+		case '?':
+			a.showHelp()
 		}
 	}
+}
+
+// --- help ---
+
+var helpText = []string{
+	"",
+	"  STERM - Kubernetes TUI Manager",
+	"",
+	"  GLOBAL",
+	"    Ctrl+Q / Ctrl+C    Quit from any page",
+	"    ?                  This help page",
+	"",
+	"  RESOURCE BROWSER (browser page)",
+	"    j/k / Up/Down      Navigate resource types",
+	"    g / Home           Go to top",
+	"    G / End            Go to bottom",
+	"    Enter              Enter resource list",
+	"    n                  Switch namespace",
+	"    /                  Search by kind or resource name",
+	"                        ESC clears search, Enter confirms",
+	"    ESC                (top level, no-op)",
+	"",
+	"  RESOURCE LIST (list page)",
+	"    j/k / Up/Down      Navigate items",
+	"    g / Home           Go to top",
+	"    G / End            Go to bottom",
+	"    Enter              View detail (YAML)",
+	"    d                  Describe resource",
+	"    y                  View YAML",
+	"    e                  Edit resource (external $EDITOR)",
+	"    s                  Shell into container (pods only)",
+	"    l                  Stream logs (pods only)",
+	"    x                  Delete resource (confirm y/N)",
+	"    /                  Filter items",
+	"    n                  Switch namespace",
+	"    ESC                Back to browser",
+	"",
+	"  DETAIL PAGE",
+	"    j/k / Up/Down      Scroll",
+	"    g / Home           Go to top",
+	"    G / End            Go to bottom",
+	"    d                  Toggle Describe / YAML",
+	"    e                  Edit YAML (external $EDITOR)",
+	"    s                  Shell into container (pods only)",
+	"    ESC                Back to list",
+	"",
+	"  LOGS PAGE",
+	"    j/k / Up/Down      Scroll (stops auto-follow)",
+	"    End                Resume auto-follow",
+	"    ESC                Back to list",
+	"",
+	"  CONTAINER PICKER (multi-container pods)",
+	"    j/k / Up/Down      Navigate containers",
+	"    Enter              Select",
+	"    ESC                Cancel",
+	"",
+	"  NAMESPACE PICKER",
+	"    j/k / Up/Down      Navigate namespaces",
+	"    /                  Filter",
+	"    Enter              Select",
+	"    ESC                Cancel",
+	"",
+	"  SEARCH MODE",
+	"    Type to filter by kind or resource name",
+	"    j/k / Up/Down      Navigate matches",
+	"    /                  Reopen search input",
+	"    ESC                Exit search",
+	"    Enter              Confirm filter (stay on browser)",
+}
+
+func (a *App) renderHelp() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, " HELP  (ESC to go back)", headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	line := 2
+	for _, text := range helpText {
+		if line >= a.height-1 {
+			break
+		}
+		a.drawText(1, line, text, style)
+		line++
+	}
+
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+	a.drawText(1, a.height-1, " ESC:back", footerStyle)
+}
+
+func (a *App) handleHelpKey(e *tcell.EventKey) {
+	if e.Key() == tcell.KeyEscape {
+		a.curr = a.helpPrevPage
+	}
+}
+
+func (a *App) showHelp() {
+	a.helpPrevPage = a.curr
+	a.curr = pageHelp
 }
 
 func splitLines(s string) []string {
