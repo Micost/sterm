@@ -68,9 +68,46 @@ sudo cp sterm /usr/local/bin/
 ### Build commands
 
 ```bash
-make build    # go build -o sterm .
-make dev      # go run .
-make clean    # rm -f sterm
+make build       # CGO_ENABLED=0 go build -o sterm .
+make dev         # go run .
+make clean       # rm -f sterm
+make install     # sudo cp sterm /usr/local/bin/
+make version     # print version info
+make tag [v0.2]  # commit, tag, and push (auto-reads version from version.go)
+```
+
+### Releasing
+
+Releases are built and published by [GoReleaser](https://goreleaser.com) via
+GitHub Actions, triggered automatically when a new tag is pushed.
+
+**Step-by-step release process:**
+
+1. Update the version in `version.go`:
+   ```go
+   var version = "v0.2.0"
+   ```
+
+2. Commit and tag:
+   ```bash
+   make tag v0.2.0
+   ```
+
+3. Push the tag (and commits):
+   ```bash
+   git push --follow-tags
+   ```
+
+4. GitHub Actions will build binaries for **linux/darwin** on **amd64/arm64**
+   and create a GitHub Release with a checksums file.
+
+**Download a release:**
+
+```bash
+# Replace {version}, {os}, {arch} as needed
+curl -L -o sterm https://github.com/Micost/sterm/releases/download/v0.2.0/sterm_v0.2.0_linux_amd64
+chmod +x sterm
+sudo mv sterm /usr/local/bin/
 ```
 
 ### Project layout
