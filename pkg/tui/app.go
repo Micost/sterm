@@ -385,6 +385,7 @@ func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 	switch e.Key() {
 	case tcell.KeyEscape:
 		a.browserFilter = ""
+		a.browserFilterOn = false
 		a.selected = 0
 	case tcell.KeyEnter:
 		a.browserFilterOn = false
@@ -402,7 +403,6 @@ func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 			a.browserFilter = a.browserFilter[:len(a.browserFilter)-1]
 		}
 		a.selected = 0
-		a.loadPreview()
 	case tcell.KeyRune:
 		switch e.Rune() {
 		case 'k', 'K':
@@ -414,6 +414,8 @@ func (a *App) handleBrowserFilterKey(e *tcell.EventKey) {
 			if a.selected < len(items)-1 {
 				a.selected++
 			}
+		case '/':
+			a.browserFilterOn = true
 		default:
 			a.browserFilter += string(e.Rune())
 			a.selected = 0
@@ -1172,15 +1174,7 @@ func (a *App) renderBrowser() {
 
 	items := a.browserList()
 	total := len(items)
-	if total == 0 {
-		msg := "No resources found"
-		if a.browserFilter != "" {
-			msg = fmt.Sprintf("No matches for \"%s\"", a.browserFilter)
-		}
-		a.drawText(a.width/2-len(msg)/2, a.height/2, msg, style)
-		return
-	}
-	if a.selected >= total {
+	if total > 0 && a.selected >= total {
 		a.selected = total - 1
 	}
 
@@ -1188,39 +1182,32 @@ func (a *App) renderBrowser() {
 	sepCol := a.width / 2
 	leftW := sepCol - 1
 	rightW := a.width - sepCol - 1
+	nsW := 3
 
 	// compute dynamic column widths
 	resW := 12
-	shortW := leftW - resW - 4
-	if shortW < 6 {
-		shortW = 6
-	}
 	for _, r := range items {
 		if len(r.GVR.Resource) > resW {
 			resW = len(r.GVR.Resource)
 		}
 	}
-	resW += 3 // padding
-	shortW = leftW - resW - 4
-	if shortW < 6 {
-		shortW = 6
-	}
-	if shortW > 16 {
-		shortW = 16
+	resW += 3
+	shortW := leftW - resW - nsW - 3 // remaining, leaves 1 space before separator
+	if shortW < 3 {
+		shortW = 3
 	}
 
 	nameW := rightW - 16
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	title := fmt.Sprintf("%-*s %-*s %s", resW, "RESOURCE", shortW, "SHORT", "NS")
+	title := fmt.Sprintf("%-*s %*s %*s", resW, "RESOURCE", shortW, "SHORT", nsW, "NS")
 	if a.browserFilterOn {
 		title = fmt.Sprintf(" [/] %s_", a.browserFilter)
 	} else if a.browserFilter != "" {
 		title = fmt.Sprintf(" [/] %s", a.browserFilter)
 	}
 	a.drawText(1, 0, title, headerStyle)
-	nameW = rightW - 16 // reserve " STATUS"
 	if nameW < 10 {
 		nameW = rightW
 	}
@@ -1269,7 +1256,7 @@ func (a *App) renderBrowser() {
 		if !r.Namespaced {
 			ns = "✗"
 		}
-		a.drawText(1, line, fmt.Sprintf("%-*s %-*s %s", resW, r.GVR.Resource, shortW, r.ShortName, ns), rowStyle)
+		a.drawText(1, line, fmt.Sprintf("%-*s %*s %*s", resW, r.GVR.Resource, shortW, r.ShortName, nsW, ns), rowStyle)
 		line++
 	}
 
