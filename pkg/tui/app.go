@@ -2028,6 +2028,7 @@ func (a *App) renderShell() {
 	if a.shell == nil {
 		return
 	}
+	a.screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
@@ -2061,6 +2062,9 @@ func (a *App) renderShell() {
 			cur = cur[:a.width]
 		}
 		a.drawText(0, line, cur, style)
+		a.screen.ShowCursor(len(cur), line)
+	} else if a.shell.scroll >= total-contentLines {
+		a.screen.ShowCursor(0, line)
 	}
 
 	footerStyle := style.Foreground(tcell.ColorGray)
@@ -2079,6 +2083,7 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 
 	switch e.Key() {
 	case tcell.KeyEscape:
+		a.screen.HideCursor()
 		a.shell.stdin.Close()
 		select {
 		case <-a.shell.done:
