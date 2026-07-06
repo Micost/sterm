@@ -685,7 +685,7 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 			a.detail.showYAML = !a.detail.showYAML
 			a.detail.scroll = 0
 		case 'e', 'E':
-			go a.editResource()
+			a.editResource()
 		case 's', 'S':
 			go a.execDetail()
 		case 'k', 'K':
@@ -1042,17 +1042,36 @@ func (a *App) editResource() {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		a.screen.Resume()
+		a.listErr = fmt.Sprintf("editor error: %v", err)
+		a.curr = pageList
+		a.render()
+		return
+	}
 
 	a.screen.Resume()
 
 	raw, err := os.ReadFile(tmpPath)
 	if err != nil {
+		a.listErr = fmt.Sprintf("read error: %v", err)
+		a.curr = pageList
+		a.render()
+		return
+	}
+
+	if string(raw) == a.detail.yamlText {
+		a.listErr = "no changes made"
+		a.curr = pageList
+		a.render()
 		return
 	}
 
 	var updated map[string]interface{}
 	if err := yaml.Unmarshal(raw, &updated); err != nil {
+		a.listErr = fmt.Sprintf("yaml error: %v", err)
+		a.curr = pageList
+		a.render()
 		return
 	}
 
