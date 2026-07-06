@@ -350,10 +350,21 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	go func() {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
+		esc := false
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
 				for _, b := range buf[:n] {
+					if esc {
+						if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
+							esc = false
+						}
+						continue
+					}
+					if b == 0x1b {
+						esc = true
+						continue
+					}
 					if b == '\n' {
 						text := sh.current
 						for _, line := range strings.Split(text, "\r") {
