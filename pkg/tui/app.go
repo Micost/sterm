@@ -347,8 +347,6 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	a.curr = pageShell
 	a.render()
 
-	stdin.Write([]byte("stty erase '^?' 2>/dev/null\r"))
-
 	go func() {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
@@ -373,7 +371,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 							sh.lines = append(sh.lines, line)
 						}
 						sh.current = ""
-					} else if b == 0x7f {
+					} else if b == 0x7f || b == 0x08 {
 						s := sh.current
 						if len(s) > 0 {
 							sh.current = s[:len(s)-1]
