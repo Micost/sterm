@@ -68,6 +68,11 @@ type detailPageState struct {
 	showYAML   bool
 	scroll     int
 	err        error
+
+	filter    string
+	filterOn  bool
+	matches   []int
+	matchIdx  int
 }
 
 type logPageState struct {
@@ -652,6 +657,11 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 		return
 	}
 
+	if a.detail.filterOn {
+		a.handleDetailFilterKey(e)
+		return
+	}
+
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.detail = nil
@@ -701,6 +711,13 @@ func (a *App) handleDetailKey(e *tcell.EventKey) {
 			a.detail.scroll = 0
 		case 'G':
 			a.detail.scroll = a.detailLines()
+		case '/':
+			a.detail.filter = ""
+			a.detail.filterOn = true
+		case 'n':
+			a.detailJumpMatch(1)
+		case 'N':
+			a.detailJumpMatch(-1)
 		case '?':
 			a.showHelp()
 		}
@@ -725,6 +742,73 @@ func (a *App) detailLines() int {
 		}
 	}
 	return lines
+}
+
+func (a *App) detailText() string {
+	if a.detail == nil {
+		return ""
+	}
+	if a.detail.showYAML {
+		return a.detail.yamlText
+	}
+	return a.detail.descText
+}
+
+func (a *App) detailFindMatches() {
+	a.detail.matches = nil
+	a.detail.matchIdx = 0
+	if a.detail.filter == "" {
+		return
+	}
+	f := strings.ToLower(a.detail.filter)
+	lines := splitLines(a.detailText())
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), f) {
+			a.detail.matches = append(a.detail.matches, i)
+		}
+	}
+	if len(a.detail.matches) > 0 {
+		a.detail.scroll = a.detail.matches[0]
+		if a.detail.scroll > a.detailLines() {
+			a.detail.scroll = a.detailLines()
+		}
+	}
+}
+
+func (a *App) detailJumpMatch(dir int) {
+	if len(a.detail.matches) == 0 {
+		return
+	}
+	a.detail.matchIdx += dir
+	if a.detail.matchIdx < 0 {
+		a.detail.matchIdx = len(a.detail.matches) - 1
+	}
+	if a.detail.matchIdx >= len(a.detail.matches) {
+		a.detail.matchIdx = 0
+	}
+	a.detail.scroll = a.detail.matches[a.detail.matchIdx]
+	if a.detail.scroll > a.detailLines() {
+		a.detail.scroll = a.detailLines()
+	}
+}
+
+func (a *App) handleDetailFilterKey(e *tcell.EventKey) {
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.detail.filter = ""
+		a.detail.filterOn = false
+		a.detail.matches = nil
+	case tcell.KeyEnter:
+		a.detail.filterOn = false
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(a.detail.filter) > 0 {
+			a.detail.filter = a.detail.filter[:len(a.detail.filter)-1]
+			a.detailFindMatches()
+		}
+	case tcell.KeyRune:
+		a.detail.filter += string(e.Rune())
+		a.detailFindMatches()
+	}
 }
 
 func (a *App) handleDeleteConfirm(e *tcell.EventKey) {
@@ -1636,7 +1720,12 @@ func (a *App) renderDetail() {
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	name := a.detail.obj.GetName()
 	kind := a.detail.obj.GetKind()
-	title := fmt.Sprintf(" %s/%s [%s]  d:toggle", kind, name, mode)
+	title := fmt.Sprintf(" %s/%s [%s]  d:toggle  e:edit", kind, name, mode)
+	if a.detail.filterOn {
+		title = fmt.Sprintf(" [/] %s_", a.detail.filter)
+	} else if a.detail.filter != "" {
+		title = fmt.Sprintf(" %s/%s [%s]  /:%s  n/N:next/prev", kind, name, mode, a.detail.filter)
+	}
 	a.fillLine(0, 0, ' ', headerStyle)
 	a.drawText(1, 0, title, headerStyle)
 
@@ -1663,7 +1752,10 @@ func (a *App) renderDetail() {
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 
 	total := len(lines)
-	info := fmt.Sprintf(" ↑↓:nav  d:toggle  s:shell  ESC:back  [%d/%d]", a.detail.scroll+1, total)
+	info := fmt.Sprintf(" ↑↓:nav  g/G:top/bot  /:search  n/N:match  d:toggle  e:edit  s:shell  ESC:back  [%d/%d]", a.detail.scroll+1, total)
+	if len(a.detail.matches) > 0 {
+		info += fmt.Sprintf("  match %d/%d", a.detail.matchIdx+1, len(a.detail.matches))
+	}
 	a.drawText(1, a.height-1, info, footerStyle)
 }
 
