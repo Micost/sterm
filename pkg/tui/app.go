@@ -214,9 +214,8 @@ func (a *App) browserList() []k8s.ResourceMeta {
 		seen := make(map[schema.GroupVersionResource]bool)
 		out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
 		for _, r := range a.recent {
-			if strings.Contains(strings.ToLower(r.Kind), f) ||
-				strings.Contains(strings.ToLower(r.Name()), f) ||
-				strings.Contains(strings.ToLower(r.GVR.Resource), f) {
+			if strings.Contains(strings.ToLower(r.GVR.Resource), f) ||
+				strings.Contains(strings.ToLower(r.ShortName), f) {
 				out = append(out, r)
 				seen[r.GVR] = true
 			}
@@ -225,9 +224,8 @@ func (a *App) browserList() []k8s.ResourceMeta {
 			if seen[r.GVR] {
 				continue
 			}
-			if strings.Contains(strings.ToLower(r.Kind), f) ||
-				strings.Contains(strings.ToLower(r.Name()), f) ||
-				strings.Contains(strings.ToLower(r.GVR.Resource), f) {
+			if strings.Contains(strings.ToLower(r.GVR.Resource), f) ||
+				strings.Contains(strings.ToLower(r.ShortName), f) {
 				out = append(out, r)
 			}
 		}
