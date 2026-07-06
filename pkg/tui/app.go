@@ -1034,11 +1034,26 @@ func (a *App) editResource() {
 	defer os.Remove(tmpPath)
 
 	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
+	editors := []string{editor, "vim", "vi", "nano"}
+	found := ""
+	for _, e := range editors {
+		if e == "" {
+			continue
+		}
+		if _, err := exec.LookPath(e); err == nil {
+			found = e
+			break
+		}
+	}
+	if found == "" {
+		a.screen.Resume()
+		a.listErr = "no editor found (vim, vi, nano)"
+		a.curr = pageList
+		a.render()
+		return
 	}
 
-	cmd := exec.Command(editor, tmpPath)
+	cmd := exec.Command(found, tmpPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
