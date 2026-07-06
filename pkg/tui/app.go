@@ -2090,7 +2090,7 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 	case tcell.KeyEnter:
 		a.shell.stdin.Write([]byte{'\r'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		a.shell.stdin.Write([]byte{0x7f})
+		a.shell.stdin.Write([]byte{0x08})
 	case tcell.KeyTab:
 		a.shell.stdin.Write([]byte{'\t'})
 	case tcell.KeyUp:
