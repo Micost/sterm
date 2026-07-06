@@ -211,9 +211,20 @@ func (a *App) addRecent(r k8s.ResourceMeta) {
 func (a *App) browserList() []k8s.ResourceMeta {
 	if a.browserFilter != "" {
 		f := strings.ToLower(a.browserFilter)
+		seen := make(map[schema.GroupVersionResource]bool)
 		out := make([]k8s.ResourceMeta, 0, len(a.recent)+len(a.resources))
-		out = append(out, a.recent...)
+		for _, r := range a.recent {
+			if strings.Contains(strings.ToLower(r.Kind), f) ||
+				strings.Contains(strings.ToLower(r.Name()), f) ||
+				strings.Contains(strings.ToLower(r.GVR.Resource), f) {
+				out = append(out, r)
+				seen[r.GVR] = true
+			}
+		}
 		for _, r := range a.resources {
+			if seen[r.GVR] {
+				continue
+			}
 			if strings.Contains(strings.ToLower(r.Kind), f) ||
 				strings.Contains(strings.ToLower(r.Name()), f) ||
 				strings.Contains(strings.ToLower(r.GVR.Resource), f) {
