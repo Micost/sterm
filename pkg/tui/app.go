@@ -347,6 +347,8 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	a.curr = pageShell
 	a.render()
 
+	stdin.Write([]byte("stty erase '^?' 2>/dev/null\r"))
+
 	go func() {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
@@ -2090,7 +2092,7 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 	case tcell.KeyEnter:
 		a.shell.stdin.Write([]byte{'\r'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		a.shell.stdin.Write([]byte{0x08})
+		a.shell.stdin.Write([]byte{0x7f})
 	case tcell.KeyTab:
 		a.shell.stdin.Write([]byte{'\t'})
 	case tcell.KeyUp:
