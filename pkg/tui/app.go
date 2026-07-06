@@ -30,6 +30,7 @@ const (
 	pageNamespace
 	pageContainerPicker
 	pageHelp
+	pageShell
 )
 
 type contPickState struct {
@@ -37,6 +38,15 @@ type contPickState struct {
 	cursor     int
 	action     string
 	podRow     k8s.TableRow
+}
+
+type shellState struct {
+	ns        string
+	pod       string
+	container string
+	output    []string
+	input     string
+	scroll    int
 }
 
 type listPageState struct {
@@ -108,6 +118,7 @@ type App struct {
 
 	// container picker
 	contPick *contPickState
+	shell    *shellState
 
 	helpPrevPage page
 
@@ -299,15 +310,14 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	ns := row.Obj.GetNamespace()
 	pod := row.Obj.GetName()
 
-	a.screen.Suspend()
-
-	cmd := exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", container, "--", "sh")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Run()
-
-	a.screen.Resume()
+	a.shell = &shellState{
+		ns:        ns,
+		pod:       pod,
+		container: container,
+		output:    []string{},
+	}
+	a.curr = pageShell
+	a.render()
 }
 
 func (a *App) openContainerLogs(row k8s.TableRow, container string) {
@@ -392,6 +402,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleContainerPickerKey(e)
 	case pageHelp:
 		a.handleHelpKey(e)
+	case pageShell:
+		a.handleShellKey(e)
 	}
 	a.render()
 }
@@ -993,23 +1005,11 @@ func (a *App) renderLogs() {
 }
 
 func (a *App) execShell(row k8s.TableRow) {
-	ns := row.Obj.GetNamespace()
-	pod := row.Obj.GetName()
 	containers := a.client.PodContainers(row.Obj)
 	if len(containers) == 0 {
 		return
 	}
-
-	a.screen.Suspend()
-
-	cmd := exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", containers[0], "--", "sh")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Run()
-
-	a.screen.Resume()
-	a.render()
+	a.execContainerShell(row, containers[0])
 }
 
 func (a *App) execDetail() {
@@ -1212,6 +1212,8 @@ func (a *App) render() {
 		a.renderContainerPicker()
 	case pageHelp:
 		a.renderHelp()
+	case pageShell:
+		a.renderShell()
 	}
 
 	a.height++
@@ -1817,6 +1819,111 @@ func (a *App) handleHelpKey(e *tcell.EventKey) {
 func (a *App) showHelp() {
 	a.helpPrevPage = a.curr
 	a.curr = pageHelp
+}
+
+// --- shell ---
+
+func (a *App) renderShell() {
+	style := tcell.StyleDefault.
+		Foreground(tcell.ColorWhite).
+		Background(tcell.ColorDefault)
+
+	if a.shell == nil {
+		return
+	}
+
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, fmt.Sprintf(" %s/%s  c:%s", a.shell.ns, a.shell.pod, a.shell.container), headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	contentLines := a.height - 4 // lines 2 to height-3
+
+	total := len(a.shell.output)
+	if a.shell.scroll > total-contentLines {
+		a.shell.scroll = total - contentLines
+	}
+	if a.shell.scroll < 0 {
+		a.shell.scroll = 0
+	}
+
+	line := 2
+	for i := 0; i < contentLines && i+a.shell.scroll < total; i++ {
+		text := a.shell.output[i+a.shell.scroll]
+		if len(text) > a.width {
+			text = text[:a.width]
+		}
+		a.drawText(0, line, text, style)
+		line++
+	}
+
+	// prompt
+	promptStyle := style.Foreground(tcell.ColorGreen).Bold(true)
+	prompt := fmt.Sprintf("> %s", a.shell.input)
+	if len(prompt) > a.width-4 {
+		prompt = prompt[:a.width-4]
+	}
+	a.fillLine(0, a.height-2, ' ', promptStyle)
+	a.drawText(1, a.height-2, prompt, promptStyle)
+
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+	a.drawText(1, a.height-1, " Enter:run  ESC:back", footerStyle)
+}
+
+func (a *App) handleShellKey(e *tcell.EventKey) {
+	if a.shell == nil {
+		return
+	}
+	contentLines := a.height - 4
+	total := len(a.shell.output)
+
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.shell = nil
+		a.curr = pageList
+	case tcell.KeyEnter:
+		cmd := a.shell.input
+		a.shell.output = append(a.shell.output, fmt.Sprintf("> %s", cmd))
+		a.shell.input = ""
+		a.shell.scroll = total
+		if cmd != "" {
+			go a.runShellCmd(cmd)
+		}
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(a.shell.input) > 0 {
+			a.shell.input = a.shell.input[:len(a.shell.input)-1]
+		}
+	case tcell.KeyUp:
+		if a.shell.scroll > 0 {
+			a.shell.scroll--
+		}
+	case tcell.KeyDown:
+		if a.shell.scroll < total-contentLines {
+			a.shell.scroll++
+		}
+	case tcell.KeyRune:
+		a.shell.input += string(e.Rune())
+	}
+}
+
+func (a *App) runShellCmd(cmd string) {
+	var buf strings.Builder
+	err := a.client.Exec(a.shell.ns, a.shell.pod, a.shell.container,
+		[]string{"sh", "-c", cmd}, nil, &buf, &buf)
+	if err != nil {
+		buf.WriteString(fmt.Sprintf("\nerror: %v", err))
+	}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		a.shell.output = append(a.shell.output, line)
+	}
+	a.shell.scroll = len(a.shell.output) - (a.height - 4)
+	if a.shell.scroll < 0 {
+		a.shell.scroll = 0
+	}
+	a.screen.PostEvent(&renderEvent{})
 }
 
 func splitLines(s string) []string {
