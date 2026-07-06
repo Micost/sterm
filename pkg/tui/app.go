@@ -1035,7 +1035,7 @@ func (a *App) editResource() {
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
-		editor = "vi"
+		editor = "vim"
 	}
 
 	cmd := exec.Command(editor, tmpPath)
