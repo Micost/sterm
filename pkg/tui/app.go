@@ -46,6 +46,7 @@ type shellState struct {
 	pod       string
 	container string
 	lines     []string
+	current   string
 	scroll    int
 	follow    bool
 	stdin     io.WriteCloser
@@ -349,29 +350,24 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	go func() {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
-		var current strings.Builder
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
 				for _, b := range buf[:n] {
 					if b == '\n' {
-						sh.lines = append(sh.lines, current.String())
-						current.Reset()
-					} else if b == '\r' {
-						current.Reset()
+						text := sh.current
+						for _, line := range strings.Split(text, "\r") {
+							sh.lines = append(sh.lines, line)
+						}
+						sh.current = ""
 					} else if b == 0x7f {
-						s := current.String()
+						s := sh.current
 						if len(s) > 0 {
-							current.Reset()
-							current.WriteString(s[:len(s)-1])
+							sh.current = s[:len(s)-1]
 						}
 					} else if b >= 32 || b == '\t' {
-						current.WriteByte(b)
+						sh.current += string(b)
 					}
-				}
-				if current.Len() > 0 {
-					sh.lines = append(sh.lines, current.String())
-					current.Reset()
 				}
 				if sh.follow {
 					contentLines := a.height - 4
@@ -2047,6 +2043,13 @@ func (a *App) renderShell() {
 		}
 		a.drawText(0, line, text, style)
 		line++
+	}
+	if a.shell.current != "" && a.shell.scroll >= total-contentLines {
+		cur := a.shell.current
+		if len(cur) > a.width {
+			cur = cur[:a.width]
+		}
+		a.drawText(0, line, cur, style)
 	}
 
 	footerStyle := style.Foreground(tcell.ColorGray)
