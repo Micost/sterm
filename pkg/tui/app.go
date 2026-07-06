@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,9 +45,11 @@ type shellState struct {
 	ns        string
 	pod       string
 	container string
-	output    []string
-	input     string
+	lines     []string
 	scroll    int
+	follow    bool
+	stdin     io.WriteCloser
+	done      chan struct{}
 }
 
 type listPageState struct {
@@ -324,14 +327,66 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	ns := row.Obj.GetNamespace()
 	pod := row.Obj.GetName()
 
-	a.shell = &shellState{
+	stdin, stdout, err := a.client.ExecTTY(ns, pod, container, []string{"sh"})
+	if err != nil {
+		a.listErr = fmt.Sprintf("exec: %v", err)
+		a.render()
+		return
+	}
+
+	sh := &shellState{
 		ns:        ns,
 		pod:       pod,
 		container: container,
-		output:    []string{},
+		follow:    true,
+		stdin:     stdin,
+		done:      make(chan struct{}),
 	}
+	a.shell = sh
 	a.curr = pageShell
 	a.render()
+
+	go func() {
+		defer close(sh.done)
+		buf := make([]byte, 4096)
+		var current strings.Builder
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				for _, b := range buf[:n] {
+					if b == '\n' {
+						sh.lines = append(sh.lines, current.String())
+						current.Reset()
+					} else if b == '\r' {
+						current.Reset()
+					} else if b == 0x7f {
+						s := current.String()
+						if len(s) > 0 {
+							current.Reset()
+							current.WriteString(s[:len(s)-1])
+						}
+					} else if b >= 32 || b == '\t' {
+						current.WriteByte(b)
+					}
+				}
+				if current.Len() > 0 {
+					sh.lines = append(sh.lines, current.String())
+					current.Reset()
+				}
+				if sh.follow {
+					contentLines := a.height - 4
+					sh.scroll = len(sh.lines) - contentLines
+					if sh.scroll < 0 {
+						sh.scroll = 0
+					}
+				}
+				a.screen.PostEvent(&renderEvent{})
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) openContainerLogs(row k8s.TableRow, container string) {
@@ -1974,9 +2029,9 @@ func (a *App) renderShell() {
 	sepStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
 
-	contentLines := a.height - 4 // lines 2 to height-3
+	contentLines := a.height - 3
 
-	total := len(a.shell.output)
+	total := len(a.shell.lines)
 	if a.shell.scroll > total-contentLines {
 		a.shell.scroll = total - contentLines
 	}
@@ -1986,7 +2041,7 @@ func (a *App) renderShell() {
 
 	line := 2
 	for i := 0; i < contentLines && i+a.shell.scroll < total; i++ {
-		text := a.shell.output[i+a.shell.scroll]
+		text := a.shell.lines[i+a.shell.scroll]
 		if len(text) > a.width {
 			text = text[:a.width]
 		}
@@ -1994,71 +2049,85 @@ func (a *App) renderShell() {
 		line++
 	}
 
-	// prompt
-	promptStyle := style.Foreground(tcell.ColorGreen).Bold(true)
-	prompt := fmt.Sprintf("> %s", a.shell.input)
-	if len(prompt) > a.width-4 {
-		prompt = prompt[:a.width-4]
-	}
-	a.fillLine(0, a.height-2, ' ', promptStyle)
-	a.drawText(1, a.height-2, prompt, promptStyle)
-
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
-	a.drawText(1, a.height-1, " Enter:run  ESC:back", footerStyle)
+	follow := ""
+	if a.shell.follow {
+		follow = " Auto-follow"
+	}
+	a.drawText(1, a.height-1, fmt.Sprintf(" ESC:close  ↑↓/PgUp/PgDn:scroll%s  [%d]", follow, total), footerStyle)
 }
 
 func (a *App) handleShellKey(e *tcell.EventKey) {
 	if a.shell == nil {
 		return
 	}
-	contentLines := a.height - 4
-	total := len(a.shell.output)
 
 	switch e.Key() {
 	case tcell.KeyEscape:
+		a.shell.stdin.Close()
+		select {
+		case <-a.shell.done:
+		default:
+		}
 		a.shell = nil
 		a.curr = pageList
+
 	case tcell.KeyEnter:
-		cmd := a.shell.input
-		a.shell.output = append(a.shell.output, fmt.Sprintf("> %s", cmd))
-		a.shell.input = ""
-		a.shell.scroll = total
-		if cmd != "" {
-			go a.runShellCmd(cmd)
-		}
+		a.shell.stdin.Write([]byte{'\r'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(a.shell.input) > 0 {
-			a.shell.input = a.shell.input[:len(a.shell.input)-1]
-		}
+		a.shell.stdin.Write([]byte{0x7f})
+	case tcell.KeyTab:
+		a.shell.stdin.Write([]byte{'\t'})
 	case tcell.KeyUp:
+		a.shell.follow = false
 		if a.shell.scroll > 0 {
 			a.shell.scroll--
 		}
 	case tcell.KeyDown:
+		total := len(a.shell.lines)
+		contentLines := a.height - 3
 		if a.shell.scroll < total-contentLines {
 			a.shell.scroll++
 		}
+	case tcell.KeyPgUp, tcell.KeyCtrlU:
+		a.shell.follow = false
+		a.shell.scroll -= a.visibleRows()
+		if a.shell.scroll < 0 {
+			a.shell.scroll = 0
+		}
+	case tcell.KeyPgDn, tcell.KeyCtrlD:
+		a.shell.scroll += a.visibleRows()
+		total := len(a.shell.lines)
+		contentLines := a.height - 3
+		if a.shell.scroll >= total-contentLines {
+			a.shell.scroll = total - contentLines
+			a.shell.follow = true
+		}
+	case tcell.KeyEnd:
+		a.shell.follow = true
 	case tcell.KeyRune:
-		a.shell.input += string(e.Rune())
+		switch e.Rune() {
+		case 'k', 'K':
+			a.shell.follow = false
+			if a.shell.scroll > 0 {
+				a.shell.scroll--
+			}
+		case 'j', 'J':
+			total := len(a.shell.lines)
+			contentLines := a.height - 3
+			if a.shell.scroll < total-contentLines {
+				a.shell.scroll++
+			}
+		case 'g':
+			a.shell.follow = false
+			a.shell.scroll = 0
+		case 'G':
+			a.shell.follow = true
+		default:
+			a.shell.stdin.Write([]byte(string(e.Rune())))
+		}
 	}
-}
-
-func (a *App) runShellCmd(cmd string) {
-	var buf strings.Builder
-	err := a.client.Exec(a.shell.ns, a.shell.pod, a.shell.container,
-		[]string{"sh", "-c", cmd}, nil, &buf, &buf)
-	if err != nil {
-		buf.WriteString(fmt.Sprintf("\nerror: %v", err))
-	}
-	for _, line := range strings.Split(buf.String(), "\n") {
-		a.shell.output = append(a.shell.output, line)
-	}
-	a.shell.scroll = len(a.shell.output) - (a.height - 4)
-	if a.shell.scroll < 0 {
-		a.shell.scroll = 0
-	}
-	a.screen.PostEvent(&renderEvent{})
 }
 
 func splitLines(s string) []string {
