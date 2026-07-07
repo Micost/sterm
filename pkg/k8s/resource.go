@@ -61,7 +61,7 @@ func (c *Client) Discover() ([]ResourceMeta, error) {
 					Resource: r.Name,
 				}
 
-				key := gvr.String()
+				key := r.Name
 				if seen[key] {
 					continue
 				}
