@@ -1,4 +1,4 @@
-.PHONY: all build run clean dev install version tag
+.PHONY: all build run clean dev install version tag test cover
 
 BIN ?= sterm
 GO ?= go
@@ -43,3 +43,12 @@ tag:
 		echo "Working tree is dirty. Commit or stash changes first."; \
 		exit 1; \
 	fi
+
+test:
+	$(GO) test -count=1 ./...
+
+cover:
+	$(GO) test -coverprofile=coverage.out ./... && $(GO) tool cover -html=coverage.out
+
+integration:
+	$(GO) test -count=1 -tags=integration -v ./pkg/k8s/ -run '^TestIntegration'
