@@ -76,6 +76,39 @@ make version     # print version info
 make tag [v0.2]  # commit, tag, and push (auto-reads version from version.go)
 ```
 
+### Testing
+
+Three layers, from fast to full:
+
+```bash
+make test          # unit + fake client tests (no cluster needed)
+make cover         # HTML coverage report
+make integration   # full integration tests (needs k3s/k8s cluster)
+```
+
+**Unit tests** (`make test`) — pure logic, no dependencies:
+`age()`, `extractStatus()`, `category()`, `isStandardGroup()`,
+`matchesFilter()`, `columnWidth()`, `truncate()`.
+
+**Fake client tests** (also `make test`) — in-memory K8s API, validates
+List/Delete/conditional columns without a real cluster.
+
+**Integration tests** (`make integration`) — runs against your local
+k3s/k8s, creates and cleans up test resources automatically:
+
+| Test | What it verifies |
+|---|---|
+| Discover | resource discovery, common types exist |
+| CRUD | create → list → get → update → delete |
+| ListPods | pod listing + NODE column |
+| Describe | resource description output |
+| Namespaces | namespace listing |
+| Exec | exec into busybox, assert stdout |
+| Logs | stream pod logs, assert content |
+
+Integration tests use `//go:build integration` tag so they never run
+during `make test` or in CI.
+
 ### Releasing
 
 Releases are built and published by [GoReleaser](https://goreleaser.com) via
