@@ -14,6 +14,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/yaml"
 )
 
@@ -328,7 +329,10 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	ns := row.Obj.GetNamespace()
 	pod := row.Obj.GetName()
 
-	stdin, stdout, err := a.client.ExecTTY(ns, pod, container, []string{"sh"})
+	resize := make(chan remotecommand.TerminalSize, 1)
+	resize <- remotecommand.TerminalSize{Width: uint16(a.width), Height: uint16(a.height - 3)}
+
+	stdin, stdout, err := a.client.ExecTTY(ns, pod, container, []string{"sh"}, resize)
 	if err != nil {
 		a.listErr = fmt.Sprintf("exec: %v", err)
 		a.render()
@@ -390,6 +394,9 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 				a.screen.PostEvent(&renderEvent{})
 			}
 			if err != nil {
+				a.curr = pageList
+				a.shell = nil
+				a.screen.PostEvent(&renderEvent{})
 				return
 			}
 		}
@@ -2028,49 +2035,54 @@ func (a *App) renderShell() {
 	if a.shell == nil {
 		return
 	}
+	sh := a.shell
 	a.screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
 
 	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
-	a.drawText(1, 0, fmt.Sprintf(" %s/%s  c:%s", a.shell.ns, a.shell.pod, a.shell.container), headerStyle)
+	a.drawText(1, 0, fmt.Sprintf(" %s/%s  c:%s", sh.ns, sh.pod, sh.container), headerStyle)
 
 	sepStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
 
 	contentLines := a.height - 3
 
-	total := len(a.shell.lines)
-	if a.shell.scroll > total-contentLines {
-		a.shell.scroll = total - contentLines
+	total := len(sh.lines)
+	if sh.scroll > total-contentLines {
+		sh.scroll = total - contentLines
 	}
-	if a.shell.scroll < 0 {
-		a.shell.scroll = 0
+	if sh.scroll < 0 {
+		sh.scroll = 0
+	}
+
+	for y := 2; y < a.height-1; y++ {
+		a.fillLine(0, y, ' ', style)
 	}
 
 	line := 2
-	for i := 0; i < contentLines && i+a.shell.scroll < total; i++ {
-		text := a.shell.lines[i+a.shell.scroll]
+	for i := 0; i < contentLines && i+sh.scroll < total; i++ {
+		text := sh.lines[i+sh.scroll]
 		if len(text) > a.width {
 			text = text[:a.width]
 		}
 		a.drawText(0, line, text, style)
 		line++
 	}
-	if a.shell.current != "" && a.shell.scroll >= total-contentLines {
-		cur := a.shell.current
+	if sh.current != "" && sh.scroll >= total-contentLines {
+		cur := sh.current
 		if len(cur) > a.width {
 			cur = cur[:a.width]
 		}
 		a.drawText(0, line, cur, style)
 		a.screen.ShowCursor(len(cur), line)
-	} else if a.shell.scroll >= total-contentLines {
+	} else if sh.scroll >= total-contentLines {
 		a.screen.ShowCursor(0, line)
 	}
 
 	footerStyle := style.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 	follow := ""
-	if a.shell.follow {
+	if sh.follow {
 		follow = " Auto-follow"
 	}
 	a.drawText(1, a.height-1, fmt.Sprintf(" ESC:close  ↑↓/PgUp/PgDn:scroll%s  [%d]", follow, total), footerStyle)
@@ -2089,8 +2101,8 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 		case <-a.shell.done:
 		default:
 		}
-		a.shell = nil
 		a.curr = pageList
+		a.shell = nil
 
 	case tcell.KeyEnter:
 		a.shell.stdin.Write([]byte{'\r'})

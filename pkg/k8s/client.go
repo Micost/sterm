@@ -81,7 +81,7 @@ func (c *Client) Exec(namespace, pod, container string, cmd []string, stdin io.R
 	})
 }
 
-func (c *Client) ExecTTY(namespace, pod, container string, cmd []string) (io.WriteCloser, io.ReadCloser, error) {
+func (c *Client) ExecTTY(namespace, pod, container string, cmd []string, resize <-chan remotecommand.TerminalSize) (io.WriteCloser, io.ReadCloser, error) {
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
 
@@ -111,12 +111,25 @@ func (c *Client) ExecTTY(namespace, pod, container string, cmd []string) (io.Wri
 		defer stdinR.Close()
 		defer stdoutW.Close()
 		executor.Stream(remotecommand.StreamOptions{
-			Stdin:  stdinR,
-			Stdout: stdoutW,
-			Stderr: stdoutW,
-			Tty:    true,
+			Stdin:             stdinR,
+			Stdout:            stdoutW,
+			Stderr:            stdoutW,
+			Tty:               true,
+			TerminalSizeQueue: &sizeQueue{ch: resize},
 		})
 	}()
 
 	return stdinW, stdoutR, nil
+}
+
+type sizeQueue struct {
+	ch <-chan remotecommand.TerminalSize
+}
+
+func (s *sizeQueue) Next() *remotecommand.TerminalSize {
+	sz, ok := <-s.ch
+	if !ok {
+		return nil
+	}
+	return &sz
 }
