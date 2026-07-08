@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/yaml"
 )
 
@@ -46,14 +44,9 @@ type shellState struct {
 	ns        string
 	pod       string
 	container string
-	lines     []string
-	current   string
-	scroll    int
-	follow    bool
-	stdin     io.WriteCloser
+	term      *Terminal
 	done      chan struct{}
 	started   bool
-	seenText  bool
 }
 
 type listPageState struct {
@@ -128,6 +121,9 @@ type App struct {
 	nsFilterOn bool
 	nsPrevPage page     // page to return to on ESC
 
+	// auto-refresh
+	refreshStop chan struct{}
+
 	// container picker
 	contPick *contPickState
 	shell    *shellState
@@ -170,6 +166,7 @@ func (a *App) Run() error {
 }
 
 func (a *App) loadList() {
+	a.stopRefresh()
 	ns := ""
 	if a.list.meta.Namespaced {
 		ns = a.namespace
@@ -183,6 +180,39 @@ func (a *App) loadList() {
 	a.list.selected = 0
 	a.list.offset = 0
 	a.render()
+	a.startRefresh()
+}
+
+func (a *App) startRefresh() {
+	a.stopRefresh()
+	a.refreshStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ns := ""
+				if a.list != nil && a.list.meta.Namespaced {
+					ns = a.namespace
+				}
+				data, err := a.client.List(context.Background(), a.list.meta.GVR, ns)
+				if err == nil {
+					a.list.data = data
+				}
+				a.screen.PostEvent(&renderEvent{})
+			case <-a.refreshStop:
+				return
+			}
+		}
+	}()
+}
+
+func (a *App) stopRefresh() {
+	if a.refreshStop != nil {
+		close(a.refreshStop)
+		a.refreshStop = nil
+	}
 }
 
 func (a *App) loadResources() {
@@ -345,21 +375,13 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	ns := row.Obj.GetNamespace()
 	pod := row.Obj.GetName()
 
-	resize := make(chan remotecommand.TerminalSize, 1)
-	resize <- remotecommand.TerminalSize{Width: uint16(a.width), Height: uint16(a.height - 3)}
-
-	shells := [][]string{{"sh"}, {"bash"}, {"ash"}}
-	var stdin io.WriteCloser
-	var stdout io.ReadCloser
-	var err error
-	for _, s := range shells {
-		stdin, stdout, err = a.client.ExecTTY(ns, pod, container, s, resize)
-		if err == nil {
-			break
-		}
+	termRows := a.height - 3
+	if termRows < 5 {
+		termRows = 10
 	}
-	if err != nil {
-		a.listErr = fmt.Sprintf("exec: %v", err)
+	term := NewTerminal(termRows, a.width)
+	if err := term.Start(ns, pod, container); err != nil {
+		a.listErr = fmt.Sprintf("shell: %v", err)
 		a.render()
 		return
 	}
@@ -368,8 +390,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 		ns:        ns,
 		pod:       pod,
 		container: container,
-		follow:    true,
-		stdin:     stdin,
+		term:      term,
 		done:      make(chan struct{}),
 	}
 	a.shell = sh
@@ -380,55 +401,10 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	go func() {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
-		esc := false
 		for {
-			n, err := stdout.Read(buf)
+			n, err := term.pty.Read(buf)
 			if n > 0 {
-				for _, b := range buf[:n] {
-					if esc {
-						if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
-							esc = false
-						}
-						continue
-					}
-					if b == 0x1b {
-						esc = true
-						continue
-					}
-					if b == '\n' {
-						parts := strings.Split(sh.current, "\r")
-						text := ""
-						for i := len(parts) - 1; i >= 0; i-- {
-							if parts[i] != "" {
-								text = parts[i]
-								break
-							}
-						}
-						if !sh.seenText && text == "" {
-							sh.current = ""
-							continue
-						}
-						sh.lines = append(sh.lines, text)
-						if text != "" {
-							sh.seenText = true
-						}
-						sh.current = ""
-					} else if b == 0x7f || b == 0x08 {
-						s := sh.current
-						if len(s) > 0 {
-							sh.current = s[:len(s)-1]
-						}
-					} else if b >= 32 || b == '\t' || b == '\r' {
-						sh.current += string(b)
-					}
-				}
-				if sh.follow {
-					contentLines := a.height - 4
-					sh.scroll = len(sh.lines) - contentLines
-					if sh.scroll < 0 {
-						sh.scroll = 0
-					}
-				}
+				term.Process(buf[:n])
 				a.screen.PostEvent(&renderEvent{})
 			}
 			if err != nil {
@@ -674,6 +650,7 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
+		a.stopRefresh()
 		a.curr = pageBrowser
 		a.list = nil
 	case tcell.KeyEnter:
@@ -688,6 +665,7 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.list.filter = ""
 			a.list.filterOn = true
 		case 'q', 'Q':
+			a.stopRefresh()
 			a.curr = pageBrowser
 			a.list = nil
 		case 'x', 'X':
@@ -1036,6 +1014,7 @@ func (a *App) openDetail(row k8s.TableRow) {
 }
 
 func (a *App) openDetailMode(row k8s.TableRow, showYAML bool) {
+	a.stopRefresh()
 	yamlText, err := k8s.ToYAML(row.Obj)
 	if err != nil {
 		a.detail = &detailPageState{err: err}
@@ -1055,6 +1034,7 @@ func (a *App) openDetailMode(row k8s.TableRow, showYAML bool) {
 }
 
 func (a *App) openLogs(row k8s.TableRow) {
+	a.stopRefresh()
 	ns := row.Obj.GetNamespace()
 	podName := row.Obj.GetName()
 	containers := a.client.PodContainers(row.Obj)
@@ -1211,6 +1191,7 @@ func (a *App) renderLogs() {
 }
 
 func (a *App) execShell(row k8s.TableRow) {
+	a.stopRefresh()
 	containers := a.client.PodContainers(row.Obj)
 	if len(containers) == 0 {
 		return
@@ -2088,142 +2069,51 @@ func (a *App) showHelp() {
 // --- shell ---
 
 func (a *App) renderShell() {
-	style := tcell.StyleDefault.
-		Foreground(tcell.ColorWhite).
-		Background(tcell.ColorDefault)
-
 	if a.shell == nil {
 		return
 	}
 	sh := a.shell
 	a.screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
 
-	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	headerStyle := tcell.StyleDefault.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
 	a.drawText(1, 0, fmt.Sprintf(" %s/%s  c:%s", sh.ns, sh.pod, sh.container), headerStyle)
 
-	sepStyle := style.Foreground(tcell.ColorGray)
+	sepStyle := tcell.StyleDefault.Foreground(tcell.ColorGray)
 	a.fillLine(0, 1, '─', sepStyle)
 
-	contentLines := a.height - 3
+	sh.term.Render(a.screen, 2)
 
-	total := len(sh.lines)
-	if sh.scroll > total-contentLines {
-		sh.scroll = total - contentLines
-	}
-	if sh.scroll < 0 {
-		sh.scroll = 0
-	}
-
-	for y := 2; y < a.height-1; y++ {
-		a.fillLine(0, y, ' ', style)
-	}
-
-	line := 2
-	for i := 0; i < total && line < 2+contentLines; i++ {
-		text := sh.lines[i+sh.scroll]
-		for len(text) > 0 && line < 2+contentLines {
-			chunk := text
-			if len(chunk) > a.width {
-				chunk = text[:a.width]
-				text = text[a.width:]
-			} else {
-				text = ""
-			}
-			a.drawText(0, line, chunk, style)
-			line++
-		}
-	}
-	if sh.current != "" && sh.scroll >= total-contentLines {
-		cur := sh.current
-		if len(cur) > a.width {
-			cur = cur[:a.width]
-		}
-		a.drawText(0, line, cur, style)
-		a.screen.ShowCursor(len(cur), line)
-	} else if sh.scroll >= total-contentLines {
-		a.screen.ShowCursor(0, line)
-	}
-
-	footerStyle := style.Foreground(tcell.ColorGray)
+	footerStyle := tcell.StyleDefault.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
-	follow := ""
-	if sh.follow {
-		follow = " Auto-follow"
-	}
-	a.drawText(1, a.height-1, fmt.Sprintf(" ESC:close  ↑↓/PgUp/PgDn:scroll%s  [%d]", follow, total), footerStyle)
+	a.drawText(1, a.height-1, " ESC:close", footerStyle)
 }
 
 func (a *App) handleShellKey(e *tcell.EventKey) {
 	if a.shell == nil {
 		return
 	}
+	sh := a.shell
 
 	switch e.Key() {
 	case tcell.KeyEscape:
 		a.screen.HideCursor()
-		a.shell.stdin.Close()
+		sh.term.Close()
 		select {
-		case <-a.shell.done:
+		case <-sh.done:
 		default:
 		}
 		a.curr = pageList
 		a.shell = nil
 
 	case tcell.KeyEnter:
-		a.shell.stdin.Write([]byte{'\r'})
+		sh.term.Write([]byte{'\r'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		a.shell.stdin.Write([]byte{0x08})
+		sh.term.Write([]byte{0x7f})
 	case tcell.KeyTab:
-		a.shell.stdin.Write([]byte{'\t'})
-	case tcell.KeyUp:
-		a.shell.follow = false
-		if a.shell.scroll > 0 {
-			a.shell.scroll--
-		}
-	case tcell.KeyDown:
-		total := len(a.shell.lines)
-		contentLines := a.height - 3
-		if a.shell.scroll < total-contentLines {
-			a.shell.scroll++
-		}
-	case tcell.KeyPgUp, tcell.KeyCtrlU:
-		a.shell.follow = false
-		a.shell.scroll -= a.visibleRows()
-		if a.shell.scroll < 0 {
-			a.shell.scroll = 0
-		}
-	case tcell.KeyPgDn, tcell.KeyCtrlD:
-		a.shell.scroll += a.visibleRows()
-		total := len(a.shell.lines)
-		contentLines := a.height - 3
-		if a.shell.scroll >= total-contentLines {
-			a.shell.scroll = total - contentLines
-			a.shell.follow = true
-		}
-	case tcell.KeyEnd:
-		a.shell.follow = true
+		sh.term.Write([]byte{'\t'})
 	case tcell.KeyRune:
-		switch e.Rune() {
-		case 'k', 'K':
-			a.shell.follow = false
-			if a.shell.scroll > 0 {
-				a.shell.scroll--
-			}
-		case 'j', 'J':
-			total := len(a.shell.lines)
-			contentLines := a.height - 3
-			if a.shell.scroll < total-contentLines {
-				a.shell.scroll++
-			}
-		case 'g':
-			a.shell.follow = false
-			a.shell.scroll = 0
-		case 'G':
-			a.shell.follow = true
-		default:
-			a.shell.stdin.Write([]byte(string(e.Rune())))
-		}
+		sh.term.Write([]byte(string(e.Rune())))
 	}
 }
 

@@ -3,6 +3,7 @@ module github.com/Micost/sterm
 go 1.26.0
 
 require (
+	github.com/creack/pty v1.1.9
 	github.com/gdamore/tcell/v2 v2.13.10
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
