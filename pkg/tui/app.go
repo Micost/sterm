@@ -52,6 +52,8 @@ type shellState struct {
 	follow    bool
 	stdin     io.WriteCloser
 	done      chan struct{}
+	started   bool
+	seenText  bool
 }
 
 type listPageState struct {
@@ -293,6 +295,20 @@ func (a *App) loadPreview() {
 	}()
 }
 
+func (a *App) jumpToResource(name string) {
+	items := a.browserList()
+	for i, r := range items {
+		if r.GVR.Resource == name {
+			a.addRecent(r)
+			a.list = &listPageState{meta: r}
+			a.curr = pageList
+			a.selected = i
+			go a.loadList()
+			return
+		}
+	}
+}
+
 func (a *App) enterNamespacePicker() {
 	a.nsPrevPage = a.curr
 	a.curr = pageNamespace
@@ -332,7 +348,16 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	resize := make(chan remotecommand.TerminalSize, 1)
 	resize <- remotecommand.TerminalSize{Width: uint16(a.width), Height: uint16(a.height - 3)}
 
-	stdin, stdout, err := a.client.ExecTTY(ns, pod, container, []string{"sh"}, resize)
+	shells := [][]string{{"sh"}, {"bash"}, {"ash"}}
+	var stdin io.WriteCloser
+	var stdout io.ReadCloser
+	var err error
+	for _, s := range shells {
+		stdin, stdout, err = a.client.ExecTTY(ns, pod, container, s, resize)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		a.listErr = fmt.Sprintf("exec: %v", err)
 		a.render()
@@ -350,6 +375,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	a.shell = sh
 	a.curr = pageShell
 	a.render()
+	sh.started = true
 
 	go func() {
 		defer close(sh.done)
@@ -370,9 +396,21 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 						continue
 					}
 					if b == '\n' {
-						text := sh.current
-						for _, line := range strings.Split(text, "\r") {
-							sh.lines = append(sh.lines, line)
+						parts := strings.Split(sh.current, "\r")
+						text := ""
+						for i := len(parts) - 1; i >= 0; i-- {
+							if parts[i] != "" {
+								text = parts[i]
+								break
+							}
+						}
+						if !sh.seenText && text == "" {
+							sh.current = ""
+							continue
+						}
+						sh.lines = append(sh.lines, text)
+						if text != "" {
+							sh.seenText = true
 						}
 						sh.current = ""
 					} else if b == 0x7f || b == 0x08 {
@@ -380,7 +418,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 						if len(s) > 0 {
 							sh.current = s[:len(s)-1]
 						}
-					} else if b >= 32 || b == '\t' {
+					} else if b >= 32 || b == '\t' || b == '\r' {
 						sh.current += string(b)
 					}
 				}
@@ -394,8 +432,11 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 				a.screen.PostEvent(&renderEvent{})
 			}
 			if err != nil {
-				a.curr = pageList
-				a.shell = nil
+				if sh.started {
+					a.screen.HideCursor()
+					a.curr = pageList
+					a.shell = nil
+				}
 				a.screen.PostEvent(&renderEvent{})
 				return
 			}
@@ -455,6 +496,7 @@ func (a *App) eventLoop() {
 		switch e := ev.(type) {
 		case *tcell.EventKey:
 			a.handleKey(e)
+			a.render()
 		case *tcell.EventResize:
 			a.width, a.height = a.screen.Size()
 			a.screen.Sync()
@@ -561,6 +603,8 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.browserFilterOn = true
 		case '?':
 			a.showHelp()
+		case 'p':
+			a.jumpToResource("pods")
 		}
 	}
 }
@@ -647,7 +691,7 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.curr = pageBrowser
 			a.list = nil
 		case 'x', 'X':
-			if len(a.filteredRows()) > 0 {
+			if a.list.meta.GVR.Resource == "pods" && len(a.filteredRows()) > 0 {
 				a.list.deleteConfirm = true
 			}
 		case 'l', 'L':
@@ -1277,6 +1321,17 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 			a.nsCursor = 0
 		case tcell.KeyEnter:
 			a.nsFilterOn = false
+			items := a.nsFilteredItems()
+			if a.nsCursor >= 0 && a.nsCursor < len(items) {
+				a.namespace = items[a.nsCursor]
+				a.curr = a.nsPrevPage
+				if a.curr == pageList {
+					go a.loadList()
+				} else if a.curr == pageBrowser {
+					go a.loadPreview()
+				}
+			}
+			return
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
 			if len(a.nsFilter) > 0 {
 				a.nsFilter = a.nsFilter[:len(a.nsFilter)-1]
@@ -1390,6 +1445,7 @@ func (a *App) quit() {
 
 func (a *App) render() {
 	a.screen.Clear()
+	a.screen.HideCursor()
 
 	a.height--
 
@@ -1758,7 +1814,11 @@ func (a *App) renderList() {
 		info = fmt.Sprintf(" Delete %s? (y/N)", name)
 	} else {
 		ns := a.nsDisplayName(a.namespace)
-		info = fmt.Sprintf(" d:desc  y:yaml  e:edit  s:shell  l:logs  x:del  n:ns(%s)  ESC:back  [%d/%d] %s", ns, sel, total, filterInfo)
+		podOps := ""
+		if a.list.meta.GVR.Resource == "pods" {
+			podOps = "  s:shell  l:logs  x:del"
+		}
+		info = fmt.Sprintf(" d:desc  y:yaml  e:edit%s  n:ns(%s)  ESC:back  [%d/%d] %s", podOps, ns, sel, total, filterInfo)
 	}
 	if a.listErr != "" {
 		errStyle := style.Foreground(tcell.ColorRed)
@@ -2060,13 +2120,19 @@ func (a *App) renderShell() {
 	}
 
 	line := 2
-	for i := 0; i < contentLines && i+sh.scroll < total; i++ {
+	for i := 0; i < total && line < 2+contentLines; i++ {
 		text := sh.lines[i+sh.scroll]
-		if len(text) > a.width {
-			text = text[:a.width]
+		for len(text) > 0 && line < 2+contentLines {
+			chunk := text
+			if len(chunk) > a.width {
+				chunk = text[:a.width]
+				text = text[a.width:]
+			} else {
+				text = ""
+			}
+			a.drawText(0, line, chunk, style)
+			line++
 		}
-		a.drawText(0, line, text, style)
-		line++
 	}
 	if sh.current != "" && sh.scroll >= total-contentLines {
 		cur := sh.current

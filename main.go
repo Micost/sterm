@@ -21,6 +21,8 @@ func main() {
 		return
 	}
 	klog.LogToStderr(false)
+	null, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stderr = null
 
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
