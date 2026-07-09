@@ -7,30 +7,64 @@ resources, and exec'ing into containers — all without leaving the terminal.
 
 ## Features
 
-| Page | Keys | Action |
-|---|---|---|
-| **Browser** | Arrow keys / PgUp / PgDn / Home / End | Navigate resource types (3 categories: common / crd / other) |
-| | Enter | Enter resource instance list |
-| | `n` | Open namespace picker |
-| | ESC / Ctrl+C | Quit |
-| **Namespace** | Arrow keys / PgUp / PgDn / Home / End | Navigate namespaces |
-| | Enter | Select namespace (`all` = all namespaces) |
-| | `/` | Live filter |
-| | ESC | Back to previous page |
-| **List** | Arrow keys / PgUp / PgDn / Home / End | Navigate rows |
-| | Enter | View YAML / Describe |
-| | `/` | Live filter (matches any column) |
-| | `x` | Delete (confirm y/N) |
-| | `l` | Pod log stream (auto-follow) |
-| | `s` | Enter container shell |
-| | `n` | Switch namespace |
-| **Detail** | Arrow keys / PgUp / PgDn / Home / End | Scroll |
-| | `d` | Toggle YAML / Describe |
-| | `e` | Edit YAML (external $EDITOR) |
-| | `s` | Enter container shell |
-| **Logs** | Up / Down | Scroll (auto-pause follow) |
-| | End | Resume auto-follow |
-| | ESC / Ctrl+C | Back to list |
+### Browser (Resource Types)
+| Key | Action |
+|---|---|
+| `j`/`k` / `↑`/`↓` | Navigate resource types |
+| `g` / `Home` | Go to top |
+| `G` / `End` | Go to bottom |
+| `Enter` | Enter resource list |
+| `n` | Switch namespace |
+| `c` | Switch context |
+| `p` | Jump to pods |
+| `/` | Search (kind/resource/shortname) |
+| `?` | Help page |
+| `Ctrl+Q` | Quit |
+
+### List (Resource Instances)
+| Key | Action |
+|---|---|
+| `j`/`k` / `↑`/`↓` | Navigate rows |
+| `Enter` | View YAML |
+| `d` | Describe (kubectl describe) |
+| `y` | View YAML |
+| `e` | Edit resource ($EDITOR) |
+| `s` | Interactive shell (pods only) |
+| `l` | Stream logs (pods only) |
+| `x` | Delete pod (confirm y/N) |
+| `/` | Filter rows |
+| `n` | Switch namespace |
+| `c` | Switch context |
+| `ESC` | Back to browser |
+
+### Detail (YAML / Describe)
+| Key | Action |
+|---|---|
+| `j`/`k` / `↑`/`↓` | Scroll |
+| `g` / `Home` | Go to top |
+| `G` / `End` | Go to bottom |
+| `/` | Search text |
+| `n`/`N` | Jump to next/prev match |
+| `d` | Toggle YAML / Describe |
+| `e` | Edit ($EDITOR) |
+| `ESC` | Back to list |
+
+### Shell (Embedded Terminal)
+| Key | Action |
+|---|---|
+| Typing | Direct input to container shell |
+| `Enter` | Newline |
+| `Backspace` | Delete character |
+| `Ctrl+C` | Interrupt (SIGINT) |
+| `Ctrl+W`/`U`/`K`/`A`/`E` etc. | Standard shell shortcuts |
+| `ESC` | Close shell |
+
+### Pod Status Colors
+| Color | Meaning |
+|---|---|
+| 🔴 Red | Error, Terminating, CrashLoopBackOff, ErrImagePull |
+| 🟡 Yellow | Pending, Evicted, Init:xxx, ContainerCreating |
+| Default | Running, Succeeded, Completed |
 
 ## Quick Start
 
@@ -59,9 +93,9 @@ sudo cp sterm /usr/local/bin/
 
 ## Requirements
 
-- Go 1.26.4+
+- Go 1.22+
 - A valid kubeconfig (or in-cluster config)
-- `kubectl` on `$PATH` (for exec/shell feature)
+- `kubectl` on `$PATH` (for exec/shell and describe)
 
 ## Development
 
@@ -147,16 +181,21 @@ sudo mv sterm /usr/local/bin/
 
 ```
 main.go          Entry point: kubeconfig -> k8s client -> TUI App
+version.go       Version/build info (ldflags injected)
 pkg/
 ├── k8s/
-│   ├── client.go     Typed + dynamic + discovery client wrapper
-│   ├── resource.go   Discover() lists all cluster GVRs
-│   ├── lister.go     List/Get/Delete/Update/ToYAML/Namespaces
-│   ├── describe.go   Describe() formats resource summary
-│   └── logs.go       StreamLogs() + PodContainers()
+│   ├── client.go       Typed + dynamic + discovery client wrapper,
+│   │                   context listing, Exec via remotecommand
+│   ├── resource.go     Discover() lists all cluster GVRs
+│   ├── lister.go       List/Get/Delete/Update/ToYAML/Namespaces
+│   ├── describe.go     KubectlDescribe() + legacy Describe()
+│   ├── logs.go         StreamLogs() + PodContainers()
+│   ├── *_test.go       Unit + fake client + integration tests
 └── tui/
-    └── app.go        Multi-page TUI (browser / namespace / list / detail / logs)
-                      renderEvent{} drives async rendering via PostEvent
+    ├── app.go          Multi-page TUI (browser, list, detail, shell,
+    │                   logs, help, namespace/context/container picker)
+    ├── terminal.go     Cell-buffer terminal emulator for shell page
+    └── app_test.go     Helper function unit tests
 ```
 
 ### Design decisions
@@ -166,11 +205,11 @@ pkg/
   resource-generic operations; per-resource DAOs are not needed.
 - **Typed client only for special ops** — Logs and Exec use the typed
   `PodInterface`.
-- **Describe is not kubectl describe** — extracts key fields from unstructured
-  objects without shelling out to kubectl.
-- **Edit uses external editor** — suspends TUI, launches `$EDITOR` (default vi),
-  reads back the file, and calls Update.
-- **Exec shells out to kubectl** — simplest reliable TTY handling.
+- **Describe uses kubectl** — `kubectl describe` gives canonical output.
+- **Exec/shell uses kubectl + PTY** — local PTY (creack/pty) bridges
+  kubectl stdin/stdout to the embedded terminal emulator.
+- **Embedded terminal** — cell-buffer emulator with ANSI escape sequence
+  parsing, SGR color support, and dirty-line tracking.
 - **Single-goroutine event loop** — `PollEvent` drives the UI; goroutines post
   `renderEvent{}` to trigger screen refresh.
 
@@ -184,22 +223,26 @@ main.go
   └── tui.NewApp(client).Run()
         │
         └── eventLoop()
-              ├── handleBrowserKey()    resource type browser
-              ├── handleNamespaceKey()  namespace picker
-              ├── handleListKey()       resource instance list
-              ├── handleDetailKey()     YAML / Describe viewer
-              └── handleLogKey()        pod log stream
+              ├── handleBrowserKey()       resource type browser
+              ├── handleListKey()          resource instance list
+              ├── handleDetailKey()        YAML / Describe viewer
+              ├── handleLogKey()           pod log stream
+              ├── handleShellKey()         embedded terminal shell
+              ├── handleHelpKey()          help page
+              ├── handleNamespaceKey()     namespace picker
+              ├── handleContextPickerKey() context picker
+              └── handleContainerPickerKey() container picker
 ```
 
 ## Roadmap
 
 - Port forwarding
 - Resource creation (currently only edit/delete)
-- Multi-container selection (logs/shell default to first container)
 - Custom columns and custom views
 - Theme / color scheme support
-- Better error reporting (currently silently ignored)
-- Separate user manual (`docs/` directory)
+- Plugin system
+- Rollout restart / Scale replicas
+- Node management (cordon/drain)
 
 ## Contributing
 
