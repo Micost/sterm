@@ -2,11 +2,26 @@ package k8s
 
 import (
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func KubectlDescribe(ns, kind, name string) (string, error) {
+	args := []string{"describe"}
+	if ns != "" {
+		args = append(args, "-n", ns)
+	}
+	args = append(args, kind, name)
+	cmd := exec.Command("kubectl", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("kubectl describe: %w", err)
+	}
+	return string(out), nil
+}
 
 func Describe(u *unstructured.Unstructured) string {
 	var b strings.Builder

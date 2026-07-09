@@ -66,6 +66,8 @@ type detailPageState struct {
 	namespaced bool
 	yamlText   string
 	descText   string
+	yamlLines  int
+	descLines  int
 	showYAML   bool
 	scroll     int
 	err        error
@@ -880,20 +882,10 @@ func (a *App) detailLines() int {
 	if a.detail == nil {
 		return 0
 	}
-	text := a.detail.descText
 	if a.detail.showYAML {
-		text = a.detail.yamlText
+		return a.detail.yamlLines
 	}
-	if text == "" {
-		return 0
-	}
-	lines := 0
-	for _, ch := range text {
-		if ch == '\n' {
-			lines++
-		}
-	}
-	return lines
+	return a.detail.descLines
 }
 
 func (a *App) detailText() string {
@@ -1074,15 +1066,45 @@ func (a *App) openDetailMode(row k8s.TableRow, showYAML bool) {
 		return
 	}
 
+	ns := row.Obj.GetNamespace()
+	kind := row.Obj.GetKind()
+	name := row.Obj.GetName()
+
 	a.detail = &detailPageState{
 		obj:        row.Obj,
 		gvr:        a.list.meta.GVR,
 		namespaced: a.list.meta.Namespaced,
 		yamlText:   yamlText,
-		descText:   k8s.Describe(row.Obj),
+		descText:   "Loading describe...",
 		showYAML:   showYAML,
 	}
+	a.detail.yamlLines = countLines(yamlText)
+	a.detail.descLines = countLines(a.detail.descText)
 	a.curr = pageDetail
+
+	go func() {
+		desc, err := k8s.KubectlDescribe(ns, kind, name)
+		if err != nil {
+			a.detail.descText = fmt.Sprintf("Error: %v", err)
+		} else {
+			a.detail.descText = desc
+		}
+		a.detail.descLines = countLines(a.detail.descText)
+		a.screen.PostEvent(&renderEvent{})
+	}()
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 0
+	for _, ch := range s {
+		if ch == '\n' {
+			n++
+		}
+	}
+	return n
 }
 
 func (a *App) openLogs(row k8s.TableRow) {
@@ -1496,7 +1518,9 @@ func (a *App) quit() {
 }
 
 func (a *App) render() {
-	a.screen.Clear()
+	if a.curr != pageShell {
+		a.screen.Clear()
+	}
 
 	a.height--
 
@@ -1834,7 +1858,19 @@ func (a *App) renderList() {
 			w := colWs[ci]
 			fmtStr := fmt.Sprintf("%%-%ds", w)
 			text := fmt.Sprintf(fmtStr, truncate(cell, w))
-			a.drawText(x, line, text, rowStyle)
+			cellStyle := rowStyle
+			if ci < len(a.list.data.Columns) && a.list.data.Columns[ci] == "STATUS" {
+				st := strings.ToLower(cell)
+				if strings.Contains(st, "error") || strings.Contains(st, "terminating") ||
+					strings.Contains(st, "crashloop") || strings.Contains(st, "errimage") {
+					cellStyle = cellStyle.Foreground(tcell.ColorRed)
+				} else if strings.Contains(st, "pending") || strings.Contains(st, "init:") ||
+					strings.Contains(st, "containercreating") || strings.Contains(st, "unknown") ||
+					strings.Contains(st, "evicted") {
+					cellStyle = cellStyle.Foreground(tcell.ColorYellow)
+				}
+			}
+			a.drawText(x, line, text, cellStyle)
 			x += w + 1
 		}
 		line++
@@ -2218,7 +2254,6 @@ func (a *App) renderShell() {
 
 	footerStyle := tcell.StyleDefault.Foreground(tcell.ColorGray)
 	a.fillLine(0, a.height-1, ' ', footerStyle)
-	a.drawText(1, a.height-1, " ESC:close", footerStyle)
 }
 
 func (a *App) handleShellKey(e *tcell.EventKey) {

@@ -75,7 +75,11 @@ func TestListConditionalColumns(t *testing.T) {
 		"kind":       "Pod",
 		"metadata":   map[string]interface{}{"name": "my-pod", "namespace": "default"},
 		"spec":       map[string]interface{}{"nodeName": "node-1"},
-		"status":     map[string]interface{}{"phase": "Running"},
+		"status":     map[string]interface{}{"phase": "Running",
+			"containerStatuses": []interface{}{
+				map[string]interface{}{"name": "ctr", "ready": true},
+			},
+		},
 	}}
 
 	scheme := runtime.NewScheme()
@@ -87,13 +91,13 @@ func TestListConditionalColumns(t *testing.T) {
 		t.Fatalf("List error: %v", err)
 	}
 
-	if len(data.Columns) != 6 {
-		t.Errorf("pod should have 6 columns (with NODE), got %d: %v", len(data.Columns), data.Columns)
+	if len(data.Columns) != 7 {
+		t.Errorf("pod should have 7 columns (with READY+NODE), got %d: %v", len(data.Columns), data.Columns)
 	}
-	if data.Columns[5] != "NODE" {
-		t.Errorf("expected NODE column, got %s", data.Columns[5])
+	if data.Columns[6] != "NODE" {
+		t.Errorf("expected NODE column, got %s", data.Columns[6])
 	}
-	if len(data.Rows) > 0 && data.Rows[0].Cells[5] != "node-1" {
-		t.Errorf("expected node-1, got %s", data.Rows[0].Cells[5])
+	if len(data.Rows) > 0 && data.Rows[0].Cells[6] != "node-1" {
+		t.Errorf("expected node-1, got %s", data.Rows[0].Cells[6])
 	}
 }

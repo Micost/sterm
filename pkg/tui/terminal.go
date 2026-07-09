@@ -41,7 +41,7 @@ func NewTerminal(rows, cols int) *Terminal {
 		}
 		dirty[i] = true
 	}
-	return &Terminal{cells: cells, rows: rows, cols: cols, curVis: true}
+	return &Terminal{cells: cells, dirty: dirty, rows: rows, cols: cols, curVis: true}
 }
 
 func (t *Terminal) Start(ns, pod, container string) error {
