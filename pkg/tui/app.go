@@ -31,6 +31,7 @@ const (
 	pageContainerPicker
 	pageHelp
 	pageShell
+	pageContextPicker
 )
 
 type contPickState struct {
@@ -85,9 +86,10 @@ type logPageState struct {
 }
 
 type App struct {
-	client *k8s.Client
-	screen tcell.Screen
-	done   chan struct{}
+	client     *k8s.Client
+	kubeconfig string
+	screen     tcell.Screen
+	done       chan struct{}
 
 	// browser page
 	resources []k8s.ResourceMeta
@@ -121,6 +123,11 @@ type App struct {
 	nsFilterOn bool
 	nsPrevPage page     // page to return to on ESC
 
+	// context picker
+	contexts    []k8s.ContextInfo
+	ctxCursor   int
+	ctxPrevPage page
+
 	// auto-refresh
 	refreshStop chan struct{}
 
@@ -137,8 +144,8 @@ type App struct {
 	bErr    error
 }
 
-func NewApp(client *k8s.Client) *App {
-	return &App{client: client, done: make(chan struct{}), namespace: "default"}
+func NewApp(client *k8s.Client, kubeconfig string) *App {
+	return &App{client: client, kubeconfig: kubeconfig, done: make(chan struct{}), namespace: "default"}
 }
 
 func (a *App) Run() error {
@@ -339,6 +346,40 @@ func (a *App) jumpToResource(name string) {
 	}
 }
 
+func (a *App) enterContextPicker() {
+	a.ctxPrevPage = a.curr
+	contexts, err := k8s.ListContexts(a.kubeconfig)
+	if err != nil {
+		return
+	}
+	a.contexts = contexts
+	a.ctxCursor = 0
+	a.curr = pageContextPicker
+}
+
+func (a *App) switchContext(name string) {
+	config, err := k8s.BuildConfigForContext(a.kubeconfig, name)
+	if err != nil {
+		return
+	}
+	client, err := k8s.NewClient(config)
+	if err != nil {
+		return
+	}
+	a.client = client
+	a.bReady = false
+	a.resources = nil
+	a.recent = nil
+	a.previewData = nil
+	a.bErr = nil
+	a.list = nil
+	a.detail = nil
+	a.log = nil
+	a.shell = nil
+	a.curr = pageBrowser
+	go a.loadResources()
+}
+
 func (a *App) enterNamespacePicker() {
 	a.nsPrevPage = a.curr
 	a.curr = pageNamespace
@@ -375,7 +416,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	ns := row.Obj.GetNamespace()
 	pod := row.Obj.GetName()
 
-	termRows := a.height - 3
+	termRows := a.height - 4
 	if termRows < 5 {
 		termRows = 10
 	}
@@ -395,6 +436,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 	}
 	a.shell = sh
 	a.curr = pageShell
+	a.screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
 	a.render()
 	sh.started = true
 
@@ -484,7 +526,15 @@ func (a *App) eventLoop() {
 }
 
 func (a *App) handleKey(e *tcell.EventKey) {
-	if e.Key() == tcell.KeyCtrlQ || e.Key() == tcell.KeyCtrlC {
+	if e.Key() == tcell.KeyCtrlC {
+		if a.curr == pageShell && a.shell != nil {
+			a.shell.term.Write([]byte{0x03})
+			return
+		}
+		a.quit()
+		return
+	}
+	if e.Key() == tcell.KeyCtrlQ {
 		a.quit()
 		return
 	}
@@ -505,6 +555,8 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.handleHelpKey(e)
 	case pageShell:
 		a.handleShellKey(e)
+	case pageContextPicker:
+		a.handleContextPickerKey(e)
 	}
 	a.render()
 }
@@ -581,6 +633,8 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 			a.showHelp()
 		case 'p':
 			a.jumpToResource("pods")
+		case 'c':
+			a.enterContextPicker()
 		}
 	}
 }
@@ -648,13 +702,14 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		return
 	}
 
+	rows := a.filteredRows()
+
 	switch e.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlC:
 		a.stopRefresh()
 		a.curr = pageBrowser
 		a.list = nil
 	case tcell.KeyEnter:
-		rows := a.filteredRows()
 		if a.list.selected >= 0 && a.list.selected < len(rows) {
 			row := rows[a.list.selected]
 			a.openDetail(row)
@@ -669,11 +724,10 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.curr = pageBrowser
 			a.list = nil
 		case 'x', 'X':
-			if a.list.meta.GVR.Resource == "pods" && len(a.filteredRows()) > 0 {
+			if a.list.meta.GVR.Resource == "pods" && len(rows) > 0 {
 				a.list.deleteConfirm = true
 			}
 		case 'l', 'L':
-			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
 				if row.Obj.GetKind() == "Pod" {
@@ -683,7 +737,6 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 				}
 			}
 		case 's', 'S':
-			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				row := rows[a.list.selected]
 				if row.Obj.GetKind() == "Pod" {
@@ -695,17 +748,14 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 		case 'n', 'N':
 			a.enterNamespacePicker()
 		case 'd', 'D':
-			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				a.openDetailMode(rows[a.list.selected], false)
 			}
 		case 'y', 'Y':
-			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				a.openDetailMode(rows[a.list.selected], true)
 			}
 		case 'e', 'E':
-			rows := a.filteredRows()
 			if a.list.selected >= 0 && a.list.selected < len(rows) {
 				a.openDetailMode(rows[a.list.selected], true)
 				a.editResource()
@@ -725,6 +775,8 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.list.selected = a.filteredCount() - 1
 		case '?':
 			a.showHelp()
+		case 'c':
+			a.enterContextPicker()
 		}
 	case tcell.KeyUp:
 		if a.list.selected > 0 {
@@ -1318,9 +1370,28 @@ func (a *App) handleNamespaceKey(e *tcell.EventKey) {
 				a.nsFilter = a.nsFilter[:len(a.nsFilter)-1]
 			}
 			a.nsCursor = 0
+		case tcell.KeyUp:
+			if a.nsCursor > 0 {
+				a.nsCursor--
+			}
+		case tcell.KeyDown:
+			if a.nsCursor < a.nsFilteredCount()-1 {
+				a.nsCursor++
+			}
 		case tcell.KeyRune:
-			a.nsFilter += string(e.Rune())
-			a.nsCursor = 0
+			switch e.Rune() {
+			case 'k', 'K':
+				if a.nsCursor > 0 {
+					a.nsCursor--
+				}
+			case 'j', 'J':
+				if a.nsCursor < a.nsFilteredCount()-1 {
+					a.nsCursor++
+				}
+			default:
+				a.nsFilter += string(e.Rune())
+				a.nsCursor = 0
+			}
 		}
 		return
 	}
@@ -1426,7 +1497,6 @@ func (a *App) quit() {
 
 func (a *App) render() {
 	a.screen.Clear()
-	a.screen.HideCursor()
 
 	a.height--
 
@@ -1447,6 +1517,8 @@ func (a *App) render() {
 		a.renderHelp()
 	case pageShell:
 		a.renderShell()
+	case pageContextPicker:
+		a.renderContextPicker()
 	}
 
 	a.height++
@@ -1695,7 +1767,6 @@ func (a *App) renderList() {
 	}
 
 	rows := a.filteredRows()
-	_ = rows
 
 	colWs := make([]int, len(a.list.data.Columns))
 	for ci, col := range a.list.data.Columns {
@@ -1741,7 +1812,7 @@ func (a *App) renderList() {
 
 	line := 2
 	rowIdx := 0
-	for i, row := range a.filteredRows() {
+	for i, row := range rows {
 		if rowIdx < a.list.offset {
 			rowIdx++
 			continue
@@ -1787,10 +1858,9 @@ func (a *App) renderList() {
 	}
 	var info string
 	if a.list.deleteConfirm {
-		row := a.filteredRows()
 		name := "?"
-		if a.list.selected >= 0 && a.list.selected < len(row) {
-			name = row[a.list.selected].Cells[0]
+		if a.list.selected >= 0 && a.list.selected < len(rows) {
+			name = rows[a.list.selected].Cells[0]
 		}
 		info = fmt.Sprintf(" Delete %s? (y/N)", name)
 	} else {
@@ -1961,6 +2031,69 @@ func (a *App) handleContainerPickerKey(e *tcell.EventKey) {
 	}
 }
 
+// --- context picker ---
+
+func (a *App) renderContextPicker() {
+	style := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorDefault)
+
+	headerStyle := style.Bold(true).Foreground(tcell.ColorAqua)
+	a.fillLine(0, 0, ' ', headerStyle)
+	a.drawText(1, 0, " CONTEXTS", headerStyle)
+
+	sepStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, 1, '─', sepStyle)
+
+	line := 2
+	for i, ctx := range a.contexts {
+		if line >= a.height-1 {
+			break
+		}
+		rowStyle := style
+		if i == a.ctxCursor {
+			rowStyle = style.Foreground(tcell.ColorBlack).Background(tcell.ColorWhite)
+		}
+		a.fillLine(0, line, ' ', rowStyle)
+		a.drawText(1, line, fmt.Sprintf("  %-40s  cluster: %s", ctx.Name, ctx.Cluster), rowStyle)
+		line++
+	}
+
+	footerStyle := style.Foreground(tcell.ColorGray)
+	a.fillLine(0, a.height-1, ' ', footerStyle)
+	a.drawText(1, a.height-1, " ↑↓:nav  Enter:select  ESC:back", footerStyle)
+}
+
+func (a *App) handleContextPickerKey(e *tcell.EventKey) {
+	switch e.Key() {
+	case tcell.KeyEscape:
+		a.curr = a.ctxPrevPage
+	case tcell.KeyEnter:
+		if a.ctxCursor >= 0 && a.ctxCursor < len(a.contexts) {
+			a.switchContext(a.contexts[a.ctxCursor].Name)
+		}
+	case tcell.KeyUp:
+		if a.ctxCursor > 0 {
+			a.ctxCursor--
+		}
+	case tcell.KeyDown:
+		if a.ctxCursor < len(a.contexts)-1 {
+			a.ctxCursor++
+		}
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'k', 'K':
+			if a.ctxCursor > 0 {
+				a.ctxCursor--
+			}
+		case 'j', 'J':
+			if a.ctxCursor < len(a.contexts)-1 {
+				a.ctxCursor++
+			}
+		case '?':
+			a.showHelp()
+		}
+	}
+}
+
 // --- help ---
 
 var helpText = []string{
@@ -2073,7 +2206,6 @@ func (a *App) renderShell() {
 		return
 	}
 	sh := a.shell
-	a.screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
 
 	headerStyle := tcell.StyleDefault.Bold(true).Foreground(tcell.ColorAqua)
 	a.fillLine(0, 0, ' ', headerStyle)
@@ -2112,6 +2244,30 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 		sh.term.Write([]byte{0x7f})
 	case tcell.KeyTab:
 		sh.term.Write([]byte{'\t'})
+	case tcell.KeyCtrlW:
+		sh.term.Write([]byte{0x17})
+	case tcell.KeyCtrlU:
+		sh.term.Write([]byte{0x15})
+	case tcell.KeyCtrlK:
+		sh.term.Write([]byte{0x0b})
+	case tcell.KeyCtrlA:
+		sh.term.Write([]byte{0x01})
+	case tcell.KeyCtrlE:
+		sh.term.Write([]byte{0x05})
+	case tcell.KeyCtrlL:
+		sh.term.Write([]byte{0x0c})
+	case tcell.KeyCtrlD:
+		sh.term.Write([]byte{0x04})
+	case tcell.KeyCtrlR:
+		sh.term.Write([]byte{0x12})
+	case tcell.KeyUp:
+		sh.term.Write([]byte{0x1b, '[', 'A'})
+	case tcell.KeyDown:
+		sh.term.Write([]byte{0x1b, '[', 'B'})
+	case tcell.KeyRight:
+		sh.term.Write([]byte{0x1b, '[', 'C'})
+	case tcell.KeyLeft:
+		sh.term.Write([]byte{0x1b, '[', 'D'})
 	case tcell.KeyRune:
 		sh.term.Write([]byte(string(e.Rune())))
 	}

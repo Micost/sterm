@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubectl/pkg/scheme"
 )
@@ -18,6 +19,40 @@ type Client struct {
 	typed     kubernetes.Interface
 	dynamic   dynamic.Interface
 	discovery discovery.DiscoveryInterface
+}
+
+type ContextInfo struct {
+	Name    string
+	Cluster string
+	User    string
+}
+
+func ListContexts(kubeconfig string) ([]ContextInfo, error) {
+	if kubeconfig == "" {
+		kubeconfig = clientcmd.RecommendedHomeFile
+	}
+	cfg, err := clientcmd.LoadFromFile(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	var out []ContextInfo
+	for name, ctx := range cfg.Contexts {
+		out = append(out, ContextInfo{
+			Name:    name,
+			Cluster: ctx.Cluster,
+			User:    ctx.AuthInfo,
+		})
+	}
+	return out, nil
+}
+
+func BuildConfigForContext(kubeconfig, contextName string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		kubeconfig = clientcmd.RecommendedHomeFile
+	}
+	loader := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loader, overrides).ClientConfig()
 }
 
 func NewClient(config *rest.Config) (*Client, error) {

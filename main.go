@@ -42,7 +42,7 @@ func main() {
 		panic(err)
 	}
 
-	app := tui.NewApp(client)
+	app := tui.NewApp(client, kubeconfig)
 	if err := app.Run(); err != nil {
 		panic(err)
 	}

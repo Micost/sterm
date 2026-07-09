@@ -18,12 +18,14 @@ type TermCell struct {
 
 type Terminal struct {
 	cells   [][]TermCell
+	dirty   []bool
+	allDirty bool
 	rows    int
 	cols    int
 	curX    int
 	curY    int
 	curVis  bool
-	nscroll int // lines scrolled off top
+	nscroll int
 
 	pty  *os.File
 	proc *os.Process
@@ -31,11 +33,13 @@ type Terminal struct {
 
 func NewTerminal(rows, cols int) *Terminal {
 	cells := make([][]TermCell, rows)
+	dirty := make([]bool, rows)
 	for i := range cells {
 		cells[i] = make([]TermCell, cols)
 		for j := range cells[i] {
 			cells[i][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
 		}
+		dirty[i] = true
 	}
 	return &Terminal{cells: cells, rows: rows, cols: cols, curVis: true}
 }
@@ -93,6 +97,10 @@ func (t *Terminal) Resize(rows, cols int) {
 		}
 	}
 	t.cells = newCells
+	t.dirty = make([]bool, rows)
+	for i := range t.dirty {
+		t.dirty[i] = true
+	}
 	t.rows = rows
 	t.cols = cols
 	if t.curX >= cols {
@@ -154,6 +162,7 @@ func (t *Terminal) Process(data []byte) {
 		if b == 0x08 || b == 0x7f {
 			if t.curX > 0 {
 				t.curX--
+				t.cells[t.curY][t.curX] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
 			}
 			continue
 		}
@@ -169,7 +178,6 @@ func (t *Terminal) Process(data []byte) {
 			}
 		}
 	}
-	t.applyStyle(style)
 }
 
 func (t *Terminal) putChar(ch rune, style tcell.Style) {
@@ -182,6 +190,7 @@ func (t *Terminal) putChar(ch rune, style tcell.Style) {
 		t.curY = t.rows - 1
 	}
 	t.cells[t.curY][t.curX] = TermCell{Ch: ch, Style: style}
+	t.markDirty(t.curY)
 	t.curX++
 }
 
@@ -201,9 +210,16 @@ func (t *Terminal) scrollUp() {
 	for j := range t.cells[t.rows-1] {
 		t.cells[t.rows-1][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
 	}
+	for i := range t.dirty {
+		t.dirty[i] = true
+	}
 }
 
-func (t *Terminal) applyStyle(style tcell.Style) {}
+func (t *Terminal) markDirty(y int) {
+	if y >= 0 && y < len(t.dirty) {
+		t.dirty[y] = true
+	}
+}
 
 func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 	if len(fullSeq) < 3 || !strings.HasPrefix(fullSeq, "\x1b[") {
@@ -245,69 +261,115 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 		return true
 	}
 
-	switch {
-	case seq == "H" || seq == "f":
-		t.curX, t.curY = 0, 0
-	case seq == "K":
-		for x := t.curX; x < t.cols; x++ {
-			t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+	switch term {
+	case 'H', 'f':
+		row, col := 0, 0
+		if seq != "" {
+			fmt.Sscanf(seq, "%d;%d", &row, &col)
+			row--
+			col--
+			if row < 0 {
+				row = 0
+			}
+			if col < 0 {
+				col = 0
+			}
 		}
-	case seq == "1K":
-		for x := 0; x <= t.curX; x++ {
-			t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
-		}
-	case seq == "2K":
-		for x := 0; x < t.cols; x++ {
-			t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
-		}
-	case seq == "J" || seq == "0J":
-		for y := t.curY; y < t.rows; y++ {
+		t.curX, t.curY = col, row
+	case 'K':
+		switch seq {
+		case "1":
+			for x := 0; x <= t.curX; x++ {
+				t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+			}
+		case "2":
 			for x := 0; x < t.cols; x++ {
-				if y == t.curY && x < t.curX {
-					continue
+				t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+			}
+		default:
+			for x := t.curX; x < t.cols; x++ {
+				t.cells[t.curY][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+			}
+		}
+		t.markDirty(t.curY)
+	case 'J':
+		switch seq {
+		case "2":
+			for y := 0; y < t.rows; y++ {
+				for x := 0; x < t.cols; x++ {
+					t.cells[y][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
 				}
-				t.cells[y][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+			}
+			for i := range t.dirty {
+				t.dirty[i] = true
+			}
+		default:
+			for y := t.curY; y < t.rows; y++ {
+				for x := 0; x < t.cols; x++ {
+					if y == t.curY && x < t.curX {
+						continue
+					}
+					t.cells[y][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+				}
+				t.markDirty(y)
 			}
 		}
-	case seq == "2J":
-		for y := 0; y < t.rows; y++ {
-			for x := 0; x < t.cols; x++ {
-				t.cells[y][x] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
-			}
+	case 'A':
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
 		}
-	case seq == "A":
-		t.curY--
+		t.curY -= n
 		if t.curY < 0 {
 			t.curY = 0
 		}
-	case seq == "B":
-		t.curY++
+	case 'B':
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		t.curY += n
 		if t.curY >= t.rows {
 			t.curY = t.rows - 1
 		}
-	case seq == "C":
-		t.curX++
+	case 'C':
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		t.curX += n
 		if t.curX >= t.cols {
 			t.curX = t.cols - 1
 		}
-	case seq == "D":
-		t.curX--
+	case 'D':
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		t.curX -= n
 		if t.curX < 0 {
 			t.curX = 0
 		}
-	case seq == "?25h":
+	}
+
+	if seq == "?25h" {
 		t.curVis = true
-	case seq == "?25l":
+	}
+	if seq == "?25l" {
 		t.curVis = false
-	case seq == "s":
-	case seq == "u":
 	}
 	return true
 }
 
 func (t *Terminal) Render(screen tcell.Screen, startY int) {
+	if t.curVis {
+		screen.ShowCursor(t.curX, startY+t.curY)
+	}
 	baseStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorDefault)
-	for y := 0; y < t.rows && startY+y < startY+t.rows; y++ {
+	for y := 0; y < t.rows; y++ {
+		if !t.dirty[y] {
+			continue
+		}
 		for x := 0; x < t.cols; x++ {
 			cell := t.cells[y][x]
 			style := cell.Style
@@ -316,8 +378,6 @@ func (t *Terminal) Render(screen tcell.Screen, startY int) {
 			}
 			screen.SetContent(x, startY+y, cell.Ch, nil, style)
 		}
-	}
-	if t.curVis {
-		screen.ShowCursor(t.curX, startY+t.curY)
+		t.dirty[y] = false
 	}
 }
