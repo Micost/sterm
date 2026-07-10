@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
@@ -17,15 +18,16 @@ type TermCell struct {
 }
 
 type Terminal struct {
-	cells   [][]TermCell
-	dirty   []bool
+	cells    [][]TermCell
+	dirty    []bool
 	allDirty bool
-	rows    int
-	cols    int
-	curX    int
-	curY    int
-	curVis  bool
-	nscroll int
+	rows     int
+	cols     int
+	curX     int
+	curY     int
+	curVis   bool
+	nscroll  int
+	utf8Buf  []byte
 
 	pty  *os.File
 	proc *os.Process
@@ -45,6 +47,22 @@ func NewTerminal(rows, cols int) *Terminal {
 }
 
 func (t *Terminal) Start(ns, pod, container string) error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return t.startProcess(exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", container, "--", "sh"))
+}
+
+func (t *Terminal) StartLocal() error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return t.startProcess(exec.Command(shell, "-l"))
+}
+
+func (t *Terminal) startProcess(cmd *exec.Cmd) error {
 	var err error
 	var tty *os.File
 	t.pty, tty, err = pty.Open()
@@ -52,7 +70,6 @@ func (t *Terminal) Start(ns, pod, container string) error {
 		return err
 	}
 
-	cmd := exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", container, "--", "sh")
 	cmd.Stdin = tty
 	cmd.Stdout = tty
 	cmd.Stderr = tty
@@ -64,7 +81,7 @@ func (t *Terminal) Start(ns, pod, container string) error {
 	if err := cmd.Start(); err != nil {
 		t.pty.Close()
 		tty.Close()
-		return fmt.Errorf("kubectl exec: %w", err)
+		return fmt.Errorf("start: %w", err)
 	}
 	tty.Close()
 	t.proc = cmd.Process
@@ -139,9 +156,18 @@ func (t *Terminal) Process(data []byte) {
 		b := data[i]
 		if len(escBuf) > 0 {
 			escBuf += string(b)
+			// OSC sequence (\033]...\007 or \033]...\033\\)
+			if len(escBuf) == 2 && escBuf[1] == ']' {
+				continue
+			}
+			if escBuf[1] == ']' {
+				if b == 0x07 || (b == '\\' && len(escBuf) >= 3 && escBuf[len(escBuf)-2] == 0x1b) {
+					escBuf = ""
+				}
+				continue
+			}
 			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
 				if handled := t.handleEscape(escBuf, &style); !handled {
-					// could not parse, ignore
 				}
 				escBuf = ""
 			}
@@ -157,6 +183,21 @@ func (t *Terminal) Process(data []byte) {
 		}
 		if b == '\n' {
 			t.newline()
+			continue
+		}
+		if b >= 0x80 {
+			t.utf8Buf = append(t.utf8Buf, b)
+			if utf8.Valid(t.utf8Buf) {
+				r, _ := utf8.DecodeRune(t.utf8Buf)
+				t.putChar(r, style)
+				t.utf8Buf = t.utf8Buf[:0]
+			} else if len(t.utf8Buf) >= 4 {
+				r, size := utf8.DecodeRune(t.utf8Buf)
+				if r != utf8.RuneError {
+					t.putChar(r, style)
+				}
+				t.utf8Buf = t.utf8Buf[size:]
+			}
 			continue
 		}
 		if b == 0x08 || b == 0x7f {
@@ -233,13 +274,15 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 		parts := strings.Split(seq, ";")
 		for i := 0; i < len(parts); i++ {
 			if parts[i] == "" {
-				continue
+				parts[i] = "0"
 			}
 			switch parts[i] {
 			case "0":
 				*style = tcell.StyleDefault
 			case "1":
 				*style = style.Bold(true)
+			case "2":
+				*style = style.Dim(true)
 			case "30":
 				*style = style.Foreground(tcell.ColorBlack)
 			case "31":
@@ -256,6 +299,24 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 				*style = style.Foreground(tcell.ColorTeal)
 			case "37":
 				*style = style.Foreground(tcell.ColorSilver)
+			case "38":
+				if i+2 < len(parts) && parts[i+1] == "5" {
+					*style = style.Foreground(tcell.Color(parseANSI256(parts[i+2])))
+					i += 2
+				} else if i+4 < len(parts) && parts[i+1] == "2" {
+					r, g, b := parseANSI(parts[i+2]), parseANSI(parts[i+3]), parseANSI(parts[i+4])
+					*style = style.Foreground(tcell.NewRGBColor(int32(r), int32(g), int32(b)))
+					i += 4
+				}
+			case "48":
+				if i+2 < len(parts) && parts[i+1] == "5" {
+					*style = style.Background(tcell.Color(parseANSI256(parts[i+2])))
+					i += 2
+				} else if i+4 < len(parts) && parts[i+1] == "2" {
+					r, g, b := parseANSI(parts[i+2]), parseANSI(parts[i+3]), parseANSI(parts[i+4])
+					*style = style.Background(tcell.NewRGBColor(int32(r), int32(g), int32(b)))
+					i += 4
+				}
 			}
 		}
 		return true
@@ -380,4 +441,52 @@ func (t *Terminal) Render(screen tcell.Screen, startY int) {
 		}
 		t.dirty[y] = false
 	}
+}
+
+func (t *Terminal) RenderAt(screen tcell.Screen, x0, y0, w, h int) {
+	if t.rows != h || t.cols != w {
+		t.Resize(h, w)
+	}
+	if t.curVis {
+		screen.ShowCursor(x0+t.curX, y0+t.curY)
+	}
+	baseStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorDefault)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w && x < t.cols; x++ {
+			cell := t.cells[y][x]
+			style := cell.Style
+			if cell.Ch == ' ' {
+				style = baseStyle
+			}
+			screen.SetContent(x0+x, y0+y, cell.Ch, nil, style)
+		}
+		t.dirty[y] = false
+	}
+}
+
+func parseANSI256(s string) tcell.Color {
+	n := parseANSI(s)
+	switch {
+	case n < 16:
+		return tcell.Color(n)
+	case n < 232:
+		n -= 16
+		r := n / 36
+		g := (n % 36) / 6
+		b := n % 6
+		return tcell.NewRGBColor(int32(r*51), int32(g*51), int32(b*51))
+	default:
+		gray := int32((n - 232) * 10 + 8)
+		return tcell.NewRGBColor(gray, gray, gray)
+	}
+}
+
+func parseANSI(s string) int {
+	n := 0
+	for _, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			n = n*10 + int(ch-'0')
+		}
+	}
+	return n
 }

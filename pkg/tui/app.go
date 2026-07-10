@@ -137,6 +137,9 @@ type App struct {
 	contPick *contPickState
 	shell    *shellState
 
+	popupTerm *Terminal
+	popupOpen bool
+
 	helpPrevPage page
 
 	curr    page
@@ -540,6 +543,36 @@ func (a *App) handleKey(e *tcell.EventKey) {
 		a.quit()
 		return
 	}
+	if e.Key() == tcell.KeyCtrlJ {
+		a.togglePopupShell()
+		return
+	}
+
+	if a.popupOpen && a.popupTerm != nil {
+		switch e.Key() {
+		case tcell.KeyEscape:
+			a.togglePopupShell()
+			return
+		case tcell.KeyCtrlC:
+			a.popupTerm.Write([]byte{0x03})
+			return
+		case tcell.KeyEnter:
+			a.popupTerm.Write([]byte{'\r'})
+			return
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			a.popupTerm.Write([]byte{0x7f})
+			return
+		case tcell.KeyTab:
+			a.popupTerm.Write([]byte{'\t'})
+			return
+		default:
+			if e.Rune() != 0 {
+				a.popupTerm.Write([]byte(string(e.Rune())))
+			}
+			return
+		}
+	}
+
 	switch a.curr {
 	case pageBrowser:
 		a.handleBrowserKey(e)
@@ -1543,6 +1576,9 @@ func (a *App) render() {
 	if a.curr != pageShell {
 		a.screen.Clear()
 	}
+	if !a.popupOpen {
+		a.screen.HideCursor()
+	}
 
 	a.height--
 
@@ -1566,6 +1602,8 @@ func (a *App) render() {
 	case pageContextPicker:
 		a.renderContextPicker()
 	}
+
+	a.renderPopupShell()
 
 	a.height++
 	a.screen.Show()
@@ -1720,8 +1758,8 @@ func (a *App) renderBrowser() {
 
 	a.offset = 0
 
-	helpKeys := []string{"j/k", "Enter", "/", "n", "Ctrl+Q"}
-	helpDesc := []string{"Navigate", "List resources", "Search", "Namespace", "Quit"}
+	helpKeys := []string{"j/k", "Enter", "/", "n", "Ctrl+J", "Ctrl+Q"}
+	helpDesc := []string{"Navigate", "List resources", "Search", "Namespace", "Terminal", "Quit"}
 	contentRows := a.height - 2 - len(helpKeys) - 1 // header+sep, help, footer
 	if contentRows < 3 {
 		contentRows = 3
@@ -2165,6 +2203,7 @@ var helpText = []string{
 	"",
 	"  GLOBAL",
 	"    Ctrl+Q / Ctrl+C    Quit from any page",
+	"    Ctrl+J             Toggle local terminal popup",
 	"    ?                  This help page",
 	"",
 	"  RESOURCE BROWSER (browser page)",
@@ -2255,6 +2294,89 @@ func (a *App) handleHelpKey(e *tcell.EventKey) {
 	if e.Key() == tcell.KeyEscape {
 		a.curr = a.helpPrevPage
 	}
+}
+
+func (a *App) togglePopupShell() {
+	if a.popupOpen {
+		a.popupOpen = false
+		a.screen.HideCursor()
+		if a.popupTerm != nil {
+			a.popupTerm.Close()
+			a.popupTerm = nil
+		}
+		a.screen.Clear()
+		a.render()
+		return
+	}
+	w := a.width / 3
+	h := a.height / 3
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
+	}
+	term := NewTerminal(h, w)
+	if err := term.StartLocal(); err != nil {
+		return
+	}
+	a.popupTerm = term
+	a.popupOpen = true
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := term.pty.Read(buf)
+			if n > 0 {
+				term.Process(buf[:n])
+				a.screen.PostEvent(&renderEvent{})
+			}
+			if err != nil {
+				a.popupOpen = false
+				term.Close()
+				a.popupTerm = nil
+				a.screen.PostEvent(&renderEvent{})
+				return
+			}
+		}
+	}()
+}
+
+func (a *App) renderPopupShell() {
+	if a.popupTerm == nil || !a.popupOpen {
+		return
+	}
+	w := a.width / 3
+	h := a.height / 3
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
+	}
+	x0 := (a.width - w) / 2
+	y0 := (a.height - h) / 2
+
+	borderStyle := tcell.StyleDefault.Foreground(tcell.ColorAqua)
+	// top border
+	for x := 0; x < w; x++ {
+		a.screen.SetContent(x0+x, y0-1, '─', nil, borderStyle)
+	}
+	// bottom border
+	for x := 0; x < w; x++ {
+		a.screen.SetContent(x0+x, y0+h, '─', nil, borderStyle)
+	}
+	// left/right borders
+	for y := 0; y < h; y++ {
+		a.screen.SetContent(x0-1, y0+y, '│', nil, borderStyle)
+		a.screen.SetContent(x0+w, y0+y, '│', nil, borderStyle)
+	}
+	// corners
+	a.screen.SetContent(x0-1, y0-1, '┌', nil, borderStyle)
+	a.screen.SetContent(x0+w, y0-1, '┐', nil, borderStyle)
+	a.screen.SetContent(x0-1, y0+h, '└', nil, borderStyle)
+	a.screen.SetContent(x0+w, y0+h, '┘', nil, borderStyle)
+
+	a.popupTerm.RenderAt(a.screen, x0, y0, w, h)
 }
 
 func (a *App) showHelp() {

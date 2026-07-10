@@ -66,6 +66,19 @@ resources, and exec'ing into containers — all without leaving the terminal.
 | 🟡 Yellow | Pending, Evicted, Init:xxx, ContainerCreating |
 | Default | Running, Succeeded, Completed |
 
+### Node Management
+| Key | Action |
+|---|---|
+| `o` | Cordon (disable scheduling) |
+| `u` | Uncordon (enable scheduling) |
+
+### Local Terminal Popup (`Ctrl+J`)
+- Opens a 1/3-screen local terminal in sterm host
+- Inherits $SHELL (zsh/bash), environment, rc files, and themes
+- 256-color and True color support for prompt themes
+- Same key (`Ctrl+J`) toggles open/close
+- Works from any page
+
 ## Quick Start
 
 ```bash
