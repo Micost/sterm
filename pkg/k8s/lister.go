@@ -112,12 +112,17 @@ func extractStatus(u *unstructured.Unstructured) string {
 
 	kind := u.GetKind()
 
-	// Pod-specific status: check container states for detail
+	// Pod-specific status
 	if kind == "Pod" {
 		status := podStatus(u)
 		if status != "" {
 			return status
 		}
+	}
+
+	// Node-specific status
+	if kind == "Node" {
+		return nodeStatus(u)
 	}
 
 	phase, ok, err := unstructured.NestedString(u.Object, "status", "phase")
@@ -238,6 +243,39 @@ func podReadyContainers(u *unstructured.Unstructured) (ready, total int) {
 		}
 	}
 	return
+}
+
+func nodeStatus(u *unstructured.Unstructured) string {
+	unschedulable, _, _ := unstructured.NestedBool(u.Object, "spec", "unschedulable")
+	if unschedulable {
+		return "SchedulingDisabled"
+	}
+
+	conditions, ok, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+	if !ok {
+		return "Unknown"
+	}
+	for _, c := range conditions {
+		cm, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		typ, _, _ := unstructured.NestedString(cm, "type")
+		if typ != "Ready" {
+			continue
+		}
+		status, _, _ := unstructured.NestedString(cm, "status")
+		if status == "True" {
+			return "Ready"
+		}
+		// Not ready: return the reason
+		reason, _, _ := unstructured.NestedString(cm, "reason")
+		if reason != "" {
+			return reason
+		}
+		return status
+	}
+	return "Unknown"
 }
 
 func age(t metav1.Time) string {

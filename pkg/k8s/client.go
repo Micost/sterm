@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"io"
+	"os/exec"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -114,4 +115,12 @@ func (c *Client) Exec(namespace, pod, container string, cmd []string, stdin io.R
 		Stderr: stderr,
 		Tty:    false,
 	})
+}
+
+func (c *Client) CordonNode(name string) error {
+	return exec.Command("kubectl", "cordon", name).Run()
+}
+
+func (c *Client) UncordonNode(name string) error {
+	return exec.Command("kubectl", "uncordon", name).Run()
 }

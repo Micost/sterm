@@ -779,6 +779,28 @@ func (a *App) handleListKey(e *tcell.EventKey) {
 			a.showHelp()
 		case 'c':
 			a.enterContextPicker()
+		case 'o':
+			if a.list.meta.GVR.Resource == "nodes" && a.list.selected >= 0 && a.list.selected < len(rows) {
+				name := rows[a.list.selected].Cells[0]
+				go func() {
+					if err := a.client.CordonNode(name); err != nil {
+						a.listErr = fmt.Sprintf("cordon: %v", err)
+					} else {
+						a.loadList()
+					}
+				}()
+			}
+		case 'u':
+			if a.list.meta.GVR.Resource == "nodes" && a.list.selected >= 0 && a.list.selected < len(rows) {
+				name := rows[a.list.selected].Cells[0]
+				go func() {
+					if err := a.client.UncordonNode(name); err != nil {
+						a.listErr = fmt.Sprintf("uncordon: %v", err)
+					} else {
+						a.loadList()
+					}
+				}()
+			}
 		}
 	case tcell.KeyUp:
 		if a.list.selected > 0 {
@@ -1862,11 +1884,12 @@ func (a *App) renderList() {
 			if ci < len(a.list.data.Columns) && a.list.data.Columns[ci] == "STATUS" {
 				st := strings.ToLower(cell)
 				if strings.Contains(st, "error") || strings.Contains(st, "terminating") ||
-					strings.Contains(st, "crashloop") || strings.Contains(st, "errimage") {
+					strings.Contains(st, "crashloop") || strings.Contains(st, "errimage") ||
+					strings.Contains(st, "unknown") && a.list.meta.GVR.Resource == "nodes" {
 					cellStyle = cellStyle.Foreground(tcell.ColorRed)
 				} else if strings.Contains(st, "pending") || strings.Contains(st, "init:") ||
-					strings.Contains(st, "containercreating") || strings.Contains(st, "unknown") ||
-					strings.Contains(st, "evicted") {
+					strings.Contains(st, "containercreating") || strings.Contains(st, "evicted") ||
+					strings.Contains(st, "schedulingdisabled") {
 					cellStyle = cellStyle.Foreground(tcell.ColorYellow)
 				}
 			}
@@ -1902,10 +1925,14 @@ func (a *App) renderList() {
 	} else {
 		ns := a.nsDisplayName(a.namespace)
 		podOps := ""
+		nodeOps := ""
 		if a.list.meta.GVR.Resource == "pods" {
 			podOps = "  s:shell  l:logs  x:del"
 		}
-		info = fmt.Sprintf(" d:desc  y:yaml  e:edit%s  n:ns(%s)  ESC:back  [%d/%d] %s", podOps, ns, sel, total, filterInfo)
+		if a.list.meta.GVR.Resource == "nodes" {
+			nodeOps = "  o:cordon  u:uncordon"
+		}
+		info = fmt.Sprintf(" d:desc  y:yaml  e:edit%s%s  n:ns(%s)  ESC:back  [%d/%d] %s", podOps, nodeOps, ns, sel, total, filterInfo)
 	}
 	if a.listErr != "" {
 		errStyle := style.Foreground(tcell.ColorRed)
