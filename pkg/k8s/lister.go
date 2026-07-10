@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,11 +40,14 @@ func (c *Client) List(ctx context.Context, gvr schema.GroupVersionResource, ns s
 
 	cols := []string{"NAME", "NAMESPACE", "KIND", "AGE", "STATUS"}
 
-	extraCol := ""
 	isPod := gvr.Resource == "pods"
-	if isPod {
+	isNode := gvr.Resource == "nodes"
+	extraCol := ""
+
+	if isNode {
+		cols = []string{"NAME", "ROLES", "KIND", "AGE", "STATUS"}
+	} else if isPod {
 		cols = []string{"NAME", "NAMESPACE", "KIND", "AGE", "READY", "STATUS", "NODE"}
-		extraCol = "NODE"
 	} else {
 		switch gvr.Resource {
 		case "jobs":
@@ -69,7 +73,15 @@ func (c *Client) List(ctx context.Context, gvr schema.GroupVersionResource, ns s
 		age := age(item.GetCreationTimestamp())
 		cells[3] = age
 
-		if isPod {
+		if isNode {
+			cells[1] = nodeRoles(item)
+			cells[2] = item.GetKind()
+			cells[3] = age
+			cells[4] = extractStatus(item)
+		} else if isPod {
+			cells[1] = item.GetNamespace()
+			cells[2] = item.GetKind()
+			cells[3] = age
 			ready, total := podReadyContainers(item)
 			cells[4] = fmt.Sprintf("%d/%d", ready, total)
 			cells[5] = extractStatus(item)
@@ -276,6 +288,25 @@ func nodeStatus(u *unstructured.Unstructured) string {
 		return status
 	}
 	return "Unknown"
+}
+
+func nodeRoles(u *unstructured.Unstructured) string {
+	labels, ok, _ := unstructured.NestedStringMap(u.Object, "metadata", "labels")
+	if !ok {
+		return "<none>"
+	}
+	var roles []string
+	for k := range labels {
+		if strings.HasPrefix(k, "node-role.kubernetes.io/") {
+			role := strings.TrimPrefix(k, "node-role.kubernetes.io/")
+			roles = append(roles, role)
+		}
+	}
+	if len(roles) == 0 {
+		return "<none>"
+	}
+	sort.Strings(roles)
+	return strings.Join(roles, ",")
 }
 
 func age(t metav1.Time) string {
