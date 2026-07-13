@@ -1,11 +1,14 @@
 package k8s
 
 import (
+	"context"
+	"fmt"
 	"io"
-	"os/exec"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -117,10 +120,72 @@ func (c *Client) Exec(namespace, pod, container string, cmd []string, stdin io.R
 	})
 }
 
+func (c *Client) ExecTTY(namespace, pod, container string, cmd []string, resize <-chan remotecommand.TerminalSize) (io.WriteCloser, io.ReadCloser, error) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	req := c.typed.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pod).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: container,
+			Command:   cmd,
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       true,
+		}, scheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
+	if err != nil {
+		stdinW.Close()
+		stdoutW.Close()
+		stdoutR.Close()
+		return nil, nil, err
+	}
+
+	go func() {
+		defer stdinR.Close()
+		defer stdoutW.Close()
+		executor.Stream(remotecommand.StreamOptions{
+			Stdin:             stdinR,
+			Stdout:            stdoutW,
+			Stderr:            stdoutW,
+			Tty:               true,
+			TerminalSizeQueue: &sizeQueue{ch: resize},
+		})
+	}()
+
+	return stdinW, stdoutR, nil
+}
+
 func (c *Client) CordonNode(name string) error {
-	return exec.Command("kubectl", "cordon", name).Run()
+	return c.patchNode(name, true)
 }
 
 func (c *Client) UncordonNode(name string) error {
-	return exec.Command("kubectl", "uncordon", name).Run()
+	return c.patchNode(name, false)
+}
+
+func (c *Client) patchNode(name string, unschedulable bool) error {
+	nodeGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "nodes"}
+	patch := fmt.Sprintf(`{"spec":{"unschedulable":%t}}`, unschedulable)
+	_, err := c.dynamic.Resource(nodeGVR).Patch(
+		context.Background(), name, types.MergePatchType,
+		[]byte(patch), metav1.PatchOptions{})
+	return err
+}
+
+type sizeQueue struct {
+	ch <-chan remotecommand.TerminalSize
+}
+
+func (s *sizeQueue) Next() *remotecommand.TerminalSize {
+	sz, ok := <-s.ch
+	if !ok {
+		return nil
+	}
+	return &sz
 }

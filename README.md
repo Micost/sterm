@@ -26,7 +26,7 @@ resources, and exec'ing into containers — all without leaving the terminal.
 |---|---|
 | `j`/`k` / `↑`/`↓` | Navigate rows |
 | `Enter` | View YAML |
-| `d` | Describe (kubectl describe) |
+| `d` | Describe resource |
 | `y` | View YAML |
 | `e` | Edit resource ($EDITOR) |
 | `s` | Interactive shell (pods only) |
@@ -108,7 +108,6 @@ sudo cp sterm /usr/local/bin/
 
 - Go 1.22+
 - A valid kubeconfig (or in-cluster config)
-- `kubectl` on `$PATH` (for exec/shell and describe)
 
 ## Development
 
@@ -218,9 +217,8 @@ pkg/
   resource-generic operations; per-resource DAOs are not needed.
 - **Typed client only for special ops** — Logs and Exec use the typed
   `PodInterface`.
-- **Describe uses kubectl** — `kubectl describe` gives canonical output.
-- **Exec/shell uses kubectl + PTY** — local PTY (creack/pty) bridges
-  kubectl stdin/stdout to the embedded terminal emulator.
+- **Describe from unstructured** — extracts key fields without shelling out.
+- **Exec/shell uses K8s remotecommand API** — exec stream through SPDY/WebSocket to the pod.
 - **Embedded terminal** — cell-buffer emulator with ANSI escape sequence
   parsing, SGR color support, and dirty-line tracking.
 - **Single-goroutine event loop** — `PollEvent` drives the UI; goroutines post

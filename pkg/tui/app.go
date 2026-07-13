@@ -13,6 +13,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/yaml"
 )
 
@@ -426,11 +427,20 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 		termRows = 10
 	}
 	term := NewTerminal(termRows, a.width)
-	if err := term.Start(ns, pod, container); err != nil {
+
+	resizeCh := make(chan remotecommand.TerminalSize, 1)
+	resizeCh <- remotecommand.TerminalSize{Width: uint16(a.width), Height: uint16(termRows)}
+
+	stdin, stdout, err := a.client.ExecTTY(ns, pod, container, []string{"sh"}, resizeCh)
+	if err != nil {
 		a.listErr = fmt.Sprintf("shell: %v", err)
 		a.render()
 		return
 	}
+
+	term.StartStream(stdout)
+	term.stdin = stdin
+	term.stdout = stdout
 
 	sh := &shellState{
 		ns:        ns,
@@ -449,7 +459,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 		defer close(sh.done)
 		buf := make([]byte, 4096)
 		for {
-			n, err := term.pty.Read(buf)
+			n, err := term.Read(buf)
 			if n > 0 {
 				term.Process(buf[:n])
 				a.screen.PostEvent(&renderEvent{})
@@ -1121,32 +1131,17 @@ func (a *App) openDetailMode(row k8s.TableRow, showYAML bool) {
 		return
 	}
 
-	ns := row.Obj.GetNamespace()
-	kind := row.Obj.GetKind()
-	name := row.Obj.GetName()
-
 	a.detail = &detailPageState{
 		obj:        row.Obj,
 		gvr:        a.list.meta.GVR,
 		namespaced: a.list.meta.Namespaced,
 		yamlText:   yamlText,
-		descText:   "Loading describe...",
+		descText:   a.client.Describe(row.Obj),
 		showYAML:   showYAML,
 	}
 	a.detail.yamlLines = countLines(yamlText)
 	a.detail.descLines = countLines(a.detail.descText)
 	a.curr = pageDetail
-
-	go func() {
-		desc, err := k8s.KubectlDescribe(ns, kind, name)
-		if err != nil {
-			a.detail.descText = fmt.Sprintf("Error: %v", err)
-		} else {
-			a.detail.descText = desc
-		}
-		a.detail.descLines = countLines(a.detail.descText)
-		a.screen.PostEvent(&renderEvent{})
-	}()
 }
 
 func countLines(s string) int {
@@ -2325,7 +2320,7 @@ func (a *App) togglePopupShell() {
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := term.pty.Read(buf)
+			n, err := term.Read(buf)
 			if n > 0 {
 				term.Process(buf[:n])
 				a.screen.PostEvent(&renderEvent{})

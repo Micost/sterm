@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,8 +30,10 @@ type Terminal struct {
 	nscroll  int
 	utf8Buf  []byte
 
-	pty  *os.File
-	proc *os.Process
+	pty    *os.File
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	proc   *os.Process
 }
 
 func NewTerminal(rows, cols int) *Terminal {
@@ -46,12 +49,8 @@ func NewTerminal(rows, cols int) *Terminal {
 	return &Terminal{cells: cells, dirty: dirty, rows: rows, cols: cols, curVis: true}
 }
 
-func (t *Terminal) Start(ns, pod, container string) error {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	return t.startProcess(exec.Command("kubectl", "exec", "-it", "-n", ns, pod, "-c", container, "--", "sh"))
+func (t *Terminal) StartStream(stdout io.ReadCloser) {
+	t.stdout = stdout
 }
 
 func (t *Terminal) StartLocal() error {
@@ -132,14 +131,27 @@ func (t *Terminal) Resize(rows, cols int) {
 	}
 }
 
-func (t *Terminal) Write(data []byte) (int, error) {
-	if t.pty == nil {
-		return 0, fmt.Errorf("pty not open")
+func (t *Terminal) Read(p []byte) (int, error) {
+	if t.stdout != nil {
+		return t.stdout.Read(p)
 	}
-	return t.pty.Write(data)
+	return t.pty.Read(p)
+}
+
+func (t *Terminal) Write(p []byte) (int, error) {
+	if t.stdin != nil {
+		return t.stdin.Write(p)
+	}
+	return t.pty.Write(p)
 }
 
 func (t *Terminal) Close() {
+	if t.stdin != nil {
+		t.stdin.Close()
+	}
+	if t.stdout != nil {
+		t.stdout.Close()
+	}
 	if t.pty != nil {
 		t.pty.Close()
 	}
