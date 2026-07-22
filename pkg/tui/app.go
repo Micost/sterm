@@ -528,8 +528,11 @@ func (a *App) eventLoop() {
 		ev := a.screen.PollEvent()
 		switch e := ev.(type) {
 		case *tcell.EventKey:
+			prevPage := a.curr
 			a.handleKey(e)
-			a.render()
+			if a.curr != pageShell || prevPage != pageShell {
+				a.render()
+			}
 		case *tcell.EventResize:
 			a.width, a.height = a.screen.Size()
 			a.screen.Sync()
@@ -2408,15 +2411,7 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 
 	switch e.Key() {
 	case tcell.KeyEscape:
-		a.screen.HideCursor()
-		sh.term.Close()
-		select {
-		case <-sh.done:
-		default:
-		}
-		a.curr = pageList
-		a.shell = nil
-
+		sh.term.Write([]byte{0x1b})
 	case tcell.KeyEnter:
 		sh.term.Write([]byte{'\r'})
 	case tcell.KeyBackspace, tcell.KeyBackspace2:

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"unicode/utf8"
 
@@ -19,6 +20,7 @@ type TermCell struct {
 }
 
 type Terminal struct {
+	mu       sync.Mutex
 	cells    [][]TermCell
 	dirty    []bool
 	allDirty bool
@@ -95,6 +97,12 @@ func (t *Terminal) startProcess(cmd *exec.Cmd) error {
 }
 
 func (t *Terminal) Resize(rows, cols int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.resize(rows, cols)
+}
+
+func (t *Terminal) resize(rows, cols int) {
 	if t.rows == rows && t.cols == cols {
 		if t.pty != nil {
 			_ = pty.Setsize(t.pty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
@@ -125,7 +133,6 @@ func (t *Terminal) Resize(rows, cols int) {
 	if t.curY >= rows {
 		t.curY = rows - 1
 	}
-	// Resize PTY
 	if t.pty != nil {
 		_ = pty.Setsize(t.pty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	}
@@ -161,6 +168,9 @@ func (t *Terminal) Close() {
 }
 
 func (t *Terminal) Process(data []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	escBuf := ""
 	style := tcell.StyleDefault
 
@@ -245,6 +255,9 @@ func (t *Terminal) putChar(ch rune, style tcell.Style) {
 	t.cells[t.curY][t.curX] = TermCell{Ch: ch, Style: style}
 	t.markDirty(t.curY)
 	t.curX++
+	if isWide(ch) && t.curX < t.cols {
+		t.curX++
+	}
 }
 
 func (t *Terminal) newline() {
@@ -435,6 +448,9 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 }
 
 func (t *Terminal) Render(screen tcell.Screen, startY int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if t.curVis {
 		screen.ShowCursor(t.curX, startY+t.curY)
 	}
@@ -456,8 +472,11 @@ func (t *Terminal) Render(screen tcell.Screen, startY int) {
 }
 
 func (t *Terminal) RenderAt(screen tcell.Screen, x0, y0, w, h int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if t.rows != h || t.cols != w {
-		t.Resize(h, w)
+		t.resize(h, w)
 	}
 	if t.curVis {
 		screen.ShowCursor(x0+t.curX, y0+t.curY)
@@ -501,4 +520,17 @@ func parseANSI(s string) int {
 		}
 	}
 	return n
+}
+
+func isWide(ch rune) bool {
+	if ch < 0x1100 {
+		return false
+	}
+	return (ch <= 0x115F) ||
+		(ch >= 0x2E80 && ch <= 0xA4CF) ||
+		(ch >= 0xAC00 && ch <= 0xD7AF) ||
+		(ch >= 0xF900 && ch <= 0xFAFF) ||
+		(ch >= 0xFE30 && ch <= 0xFE6F) ||
+		(ch >= 0xFF01 && ch <= 0xFF60) ||
+		(ch >= 0xFFE0 && ch <= 0xFFE6)
 }
