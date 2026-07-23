@@ -29,6 +29,9 @@ type Terminal struct {
 	curX     int
 	curY     int
 	curVis   bool
+	autowrap bool
+	scrollTop int
+	scrollBot int
 	nscroll  int
 	utf8Buf  []byte
 
@@ -48,7 +51,7 @@ func NewTerminal(rows, cols int) *Terminal {
 		}
 		dirty[i] = true
 	}
-	return &Terminal{cells: cells, dirty: dirty, rows: rows, cols: cols, curVis: true}
+	return &Terminal{cells: cells, dirty: dirty, rows: rows, cols: cols, curVis: true, autowrap: true, scrollTop: 0, scrollBot: rows - 1}
 }
 
 func (t *Terminal) StartStream(stdout io.ReadCloser) {
@@ -127,6 +130,8 @@ func (t *Terminal) resize(rows, cols int) {
 	}
 	t.rows = rows
 	t.cols = cols
+	t.scrollTop = 0
+	t.scrollBot = rows - 1
 	if t.curX >= cols {
 		t.curX = cols - 1
 	}
@@ -245,12 +250,16 @@ func (t *Terminal) Process(data []byte) {
 
 func (t *Terminal) putChar(ch rune, style tcell.Style) {
 	if t.curX >= t.cols {
-		t.curX = 0
-		t.newline()
+		if t.autowrap {
+			t.curX = 0
+			t.newline()
+		} else {
+			t.curX = t.cols - 1
+		}
 	}
-	if t.curY >= t.rows {
+	if t.curY > t.scrollBot {
 		t.scrollUp()
-		t.curY = t.rows - 1
+		t.curY = t.scrollBot
 	}
 	t.cells[t.curY][t.curX] = TermCell{Ch: ch, Style: style}
 	t.markDirty(t.curY)
@@ -263,20 +272,67 @@ func (t *Terminal) putChar(ch rune, style tcell.Style) {
 func (t *Terminal) newline() {
 	t.curY++
 	t.curX = 0
-	if t.curY >= t.rows {
+	if t.curY > t.scrollBot {
 		t.scrollUp()
-		t.curY = t.rows - 1
+		t.curY = t.scrollBot
 	}
 }
 
 func (t *Terminal) scrollUp() {
 	t.nscroll++
-	copy(t.cells, t.cells[1:])
-	t.cells[t.rows-1] = make([]TermCell, t.cols)
-	for j := range t.cells[t.rows-1] {
-		t.cells[t.rows-1][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+	top := t.scrollTop
+	bot := t.scrollBot
+	copy(t.cells[top:bot], t.cells[top+1:bot+1])
+	t.cells[bot] = make([]TermCell, t.cols)
+	for j := range t.cells[bot] {
+		t.cells[bot][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
 	}
-	for i := range t.dirty {
+	for i := top; i <= bot; i++ {
+		t.dirty[i] = true
+	}
+}
+
+func (t *Terminal) scrollDown() {
+	top := t.scrollTop
+	bot := t.scrollBot
+	copy(t.cells[top+1:bot+1], t.cells[top:bot])
+	t.cells[top] = make([]TermCell, t.cols)
+	for j := range t.cells[top] {
+		t.cells[top][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+	}
+	for i := top; i <= bot; i++ {
+		t.dirty[i] = true
+	}
+}
+
+func (t *Terminal) insertLine(y int) {
+	top := t.scrollTop
+	bot := t.scrollBot
+	if y < top || y > bot {
+		return
+	}
+	copy(t.cells[y+1:bot+1], t.cells[y:bot])
+	t.cells[y] = make([]TermCell, t.cols)
+	for j := range t.cells[y] {
+		t.cells[y][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+	}
+	for i := y; i <= bot; i++ {
+		t.dirty[i] = true
+	}
+}
+
+func (t *Terminal) deleteLine(y int) {
+	top := t.scrollTop
+	bot := t.scrollBot
+	if y < top || y > bot {
+		return
+	}
+	copy(t.cells[y:bot], t.cells[y+1:bot+1])
+	t.cells[bot] = make([]TermCell, t.cols)
+	for j := range t.cells[bot] {
+		t.cells[bot][j] = TermCell{Ch: ' ', Style: tcell.StyleDefault}
+	}
+	for i := y; i <= bot; i++ {
 		t.dirty[i] = true
 	}
 }
@@ -436,6 +492,58 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 		if t.curX < 0 {
 			t.curX = 0
 		}
+	case 'L': // IL - Insert Lines
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		for i := 0; i < n; i++ {
+			t.insertLine(t.curY)
+		}
+	case 'M': // DL - Delete Lines
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		for i := 0; i < n; i++ {
+			t.deleteLine(t.curY)
+		}
+	case 'S': // SU - Scroll Up
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		for i := 0; i < n; i++ {
+			t.scrollUp()
+		}
+	case 'T': // SD - Scroll Down
+		n := 1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d", &n)
+		}
+		for i := 0; i < n; i++ {
+			t.scrollDown()
+		}
+	case 'r': // DECSTBM - Set Scroll Region
+		top, bot := 0, t.rows-1
+		if seq != "" {
+			fmt.Sscanf(seq, "%d;%d", &top, &bot)
+			top--
+			bot--
+			if top < 0 {
+				top = 0
+			}
+			if bot >= t.rows {
+				bot = t.rows - 1
+			}
+			if bot < top {
+				bot = t.rows - 1
+				top = 0
+			}
+		}
+		t.scrollTop = top
+		t.scrollBot = bot
+		t.curX, t.curY = 0, 0
 	}
 
 	if seq == "?25h" {
@@ -443,6 +551,12 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 	}
 	if seq == "?25l" {
 		t.curVis = false
+	}
+	if seq == "?7h" {
+		t.autowrap = true
+	}
+	if seq == "?7l" {
+		t.autowrap = false
 	}
 	return true
 }
