@@ -31,9 +31,10 @@ func main() {
 
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
+		kubeErr := err
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			panic("cannot build kubeconfig")
+			panic(fmt.Sprintf("cannot build kubeconfig: neither %s nor in-cluster config available\n  kubeconfig err: %v\n  in-cluster err: %v", kubeconfig, kubeErr, err))
 		}
 	}
 

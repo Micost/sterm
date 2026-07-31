@@ -125,6 +125,7 @@ type App struct {
 	nsFilter   string
 	nsFilterOn bool
 	nsPrevPage page     // page to return to on ESC
+	mouseSelecting bool
 
 	// context picker
 	contexts    []k8s.ContextInfo
@@ -172,6 +173,7 @@ func (a *App) Run() error {
 		Background(tcell.ColorDefault)
 	s.SetStyle(style)
 	s.Clear()
+	s.EnableMouse()
 
 	go a.loadResources()
 	a.eventLoop()
@@ -537,6 +539,8 @@ func (a *App) eventLoop() {
 			a.width, a.height = a.screen.Size()
 			a.screen.Sync()
 			a.render()
+		case *tcell.EventMouse:
+			a.handleMouse(e)
 		default:
 			a.handleNonKey(ev)
 		}
@@ -562,6 +566,7 @@ func (a *App) handleKey(e *tcell.EventKey) {
 	}
 
 	if a.popupOpen && a.popupTerm != nil {
+		a.popupTerm.ResetScroll()
 		switch e.Key() {
 		case tcell.KeyEscape:
 			a.togglePopupShell()
@@ -636,6 +641,10 @@ func (a *App) handleBrowserKey(e *tcell.EventKey) {
 		}
 		r := items[a.selected]
 		a.addRecent(r)
+		if r.GVR.Resource == "namespaces" {
+			a.enterNamespacePicker()
+			return
+		}
 		a.list = &listPageState{meta: r}
 		a.curr = pageList
 		go a.loadList()
@@ -2403,17 +2412,142 @@ func (a *App) renderShell() {
 	a.fillLine(0, a.height-1, ' ', footerStyle)
 }
 
+func (a *App) handleMouse(e *tcell.EventMouse) {
+	btns := e.Buttons()
+	x, y := e.Position()
+
+	switch {
+	case btns&tcell.WheelUp != 0:
+		if a.curr == pageShell && a.shell != nil {
+			a.shell.term.ScrollBack(3)
+			a.render()
+		}
+		if a.popupOpen && a.popupTerm != nil {
+			a.popupTerm.ScrollBack(3)
+			a.render()
+		}
+	case btns&tcell.WheelDown != 0:
+		if a.curr == pageShell && a.shell != nil {
+			a.shell.term.ScrollForward(3)
+			a.render()
+		}
+		if a.popupOpen && a.popupTerm != nil {
+			a.popupTerm.ScrollForward(3)
+			a.render()
+		}
+	case btns&tcell.Button1 != 0:
+		if a.curr == pageShell && a.shell != nil {
+			y -= 2
+			if y >= 0 {
+				if a.mouseSelecting {
+					a.shell.term.UpdateSelection(x, y)
+				} else {
+					a.mouseSelecting = true
+					a.shell.term.StartSelection(x, y)
+				}
+				a.render()
+			}
+		}
+		if a.popupOpen && a.popupTerm != nil {
+			if a.mouseSelecting {
+				a.popupTerm.UpdateSelection(x, y)
+			} else {
+				a.mouseSelecting = true
+				a.popupTerm.StartSelection(x, y)
+			}
+			a.render()
+		}
+	case btns == tcell.ButtonNone && a.mouseSelecting:
+		a.mouseSelecting = false
+		if a.curr == pageShell && a.shell != nil {
+			a.shell.term.EndSelection()
+			if text := a.shell.term.SelectedText(); text != "" {
+				a.copyToClipboard(text)
+			}
+			a.render()
+		}
+		if a.popupOpen && a.popupTerm != nil {
+			a.popupTerm.EndSelection()
+			if text := a.popupTerm.SelectedText(); text != "" {
+				a.copyToClipboard(text)
+			}
+			a.render()
+		}
+	case btns&tcell.Button2 != 0:
+		if a.curr == pageShell && a.shell != nil {
+			if text := a.pasteFromClipboard(); text != "" {
+				a.shell.term.Write([]byte(text))
+			}
+		}
+		if a.popupOpen && a.popupTerm != nil {
+			if text := a.pasteFromClipboard(); text != "" {
+				a.popupTerm.Write([]byte(text))
+			}
+		}
+	}
+}
+
+func (a *App) copyToClipboard(text string) {
+	encoded := make([]byte, 0, 1024)
+	const hex = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	var val uint
+	var bits int
+	for i := 0; i < len(text); i++ {
+		val = (val << 8) | uint(text[i])
+		bits += 8
+		for bits >= 6 {
+			bits -= 6
+			encoded = append(encoded, hex[(val>>bits)&0x3F])
+		}
+	}
+	if bits > 0 {
+		encoded = append(encoded, hex[(val<<(6-bits))&0x3F])
+	}
+	for len(encoded)%4 != 0 {
+		encoded = append(encoded, '=')
+	}
+	os.Stdout.Write([]byte("\033]52;c;"))
+	os.Stdout.Write(encoded)
+	os.Stdout.Write([]byte("\007"))
+}
+
+func (a *App) pasteFromClipboard() string {
+	for _, cmd := range []string{"xclip", "xsel"} {
+		path, err := exec.LookPath(cmd)
+		if err != nil {
+			continue
+		}
+		var args []string
+		if cmd == "xclip" {
+			args = []string{"-o", "-selection", "clipboard"}
+		} else {
+			args = []string{"-o", "-b"}
+		}
+		out, err := exec.Command(path, args...).Output()
+		if err != nil {
+			continue
+		}
+		return string(out)
+	}
+	return ""
+}
+
 func (a *App) handleShellKey(e *tcell.EventKey) {
 	if a.shell == nil {
 		return
 	}
 	sh := a.shell
+	sh.term.ResetScroll()
 
 	switch e.Key() {
 	case tcell.KeyEscape:
 		sh.term.Write([]byte{0x1b})
 	case tcell.KeyEnter:
 		sh.term.Write([]byte{'\r'})
+	case tcell.KeyInsert:
+		if text := a.pasteFromClipboard(); text != "" {
+			sh.term.Write([]byte(text))
+		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		sh.term.Write([]byte{0x7f})
 	case tcell.KeyTab:

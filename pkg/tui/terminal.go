@@ -35,6 +35,13 @@ type Terminal struct {
 	nscroll  int
 	utf8Buf  []byte
 
+	scrollback   [][]TermCell
+	scrollOffset int
+
+	selStartX, selStartY int
+	selEndX, selEndY     int
+	selActive            bool
+
 	pty    *os.File
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -132,6 +139,8 @@ func (t *Terminal) resize(rows, cols int) {
 	t.cols = cols
 	t.scrollTop = 0
 	t.scrollBot = rows - 1
+	t.scrollback = nil
+	t.scrollOffset = 0
 	if t.curX >= cols {
 		t.curX = cols - 1
 	}
@@ -282,6 +291,9 @@ func (t *Terminal) scrollUp() {
 	t.nscroll++
 	top := t.scrollTop
 	bot := t.scrollBot
+	saved := make([]TermCell, t.cols)
+	copy(saved, t.cells[top])
+	t.scrollback = append(t.scrollback, saved)
 	copy(t.cells[top:bot], t.cells[top+1:bot+1])
 	t.cells[bot] = make([]TermCell, t.cols)
 	for j := range t.cells[bot] {
@@ -561,27 +573,247 @@ func (t *Terminal) handleEscape(fullSeq string, style *tcell.Style) bool {
 	return true
 }
 
+func (t *Terminal) ScrollBack(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prev := t.scrollOffset
+	t.scrollOffset += n
+	if t.scrollOffset > len(t.scrollback) {
+		t.scrollOffset = len(t.scrollback)
+	}
+	if t.scrollOffset != prev {
+		for y := 0; y < t.rows; y++ {
+			t.dirty[y] = true
+		}
+	}
+}
+
+func (t *Terminal) ScrollForward(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prev := t.scrollOffset
+	t.scrollOffset -= n
+	if t.scrollOffset < 0 {
+		t.scrollOffset = 0
+	}
+	if t.scrollOffset != prev {
+		for y := 0; y < t.rows; y++ {
+			t.dirty[y] = true
+		}
+	}
+}
+
+func (t *Terminal) ResetScroll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.scrollOffset > 0 {
+		for y := 0; y < t.rows; y++ {
+			t.dirty[y] = true
+		}
+	}
+	t.scrollOffset = 0
+	t.selActive = false
+	t.selStartX, t.selStartY = 0, 0
+	t.selEndX, t.selEndY = 0, 0
+	for y := 0; y < t.rows; y++ {
+		t.dirty[y] = true
+	}
+}
+
+func (t *Terminal) screenToAbs(screenX, screenY int) (int, int) {
+	sbLines := t.scrollOffset
+	if sbLines > len(t.scrollback) {
+		sbLines = len(t.scrollback)
+	}
+	sbStart := len(t.scrollback) - sbLines
+	if screenY >= 0 && screenY < sbLines {
+		return screenX, sbStart + screenY
+	}
+	if screenY >= sbLines && screenY < t.rows {
+		return screenX, len(t.scrollback) + (screenY - sbLines)
+	}
+	return -1, -1
+}
+
+func (t *Terminal) markAllDirty() {
+	for y := 0; y < t.rows; y++ {
+		t.dirty[y] = true
+	}
+}
+
+func (t *Terminal) StartSelection(screenX, screenY int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ax, ay := t.screenToAbs(screenX, screenY)
+	if ax < 0 {
+		return
+	}
+	t.selStartX, t.selStartY = ax, ay
+	t.selEndX, t.selEndY = ax, ay
+	t.selActive = true
+	t.markAllDirty()
+}
+
+func (t *Terminal) UpdateSelection(screenX, screenY int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.selActive {
+		return
+	}
+	ax, ay := t.screenToAbs(screenX, screenY)
+	if ax < 0 {
+		return
+	}
+	t.selEndX, t.selEndY = ax, ay
+	t.markAllDirty()
+}
+
+func (t *Terminal) EndSelection() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.selActive = false
+	t.markAllDirty()
+}
+
+func (t *Terminal) ClearSelection() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.selActive = false
+	t.selStartX, t.selStartY = 0, 0
+	t.selEndX, t.selEndY = 0, 0
+	t.markAllDirty()
+}
+
+func (t *Terminal) HasSelection() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.selStartX != t.selEndX || t.selStartY != t.selEndY
+}
+
+func (t *Terminal) SelectedText() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	sx, sy := t.selStartX, t.selStartY
+	ex, ey := t.selEndX, t.selEndY
+	if sy > ey || (sy == ey && sx > ex) {
+		sx, sy, ex, ey = ex, ey, sx, sy
+	}
+
+	var buf strings.Builder
+	for row := sy; row <= ey; row++ {
+		if row != sy {
+			buf.WriteByte('\n')
+		}
+		var rowData []TermCell
+		if row < len(t.scrollback) {
+			rowData = t.scrollback[row]
+		} else {
+			cr := row - len(t.scrollback)
+			if cr < t.rows {
+				rowData = t.cells[cr]
+			}
+		}
+		if rowData == nil {
+			continue
+		}
+		startCol := 0
+		endCol := len(rowData)
+		if row == sy {
+			startCol = sx
+		}
+		if row == ey {
+			endCol = ex + 1
+			if endCol > len(rowData) {
+				endCol = len(rowData)
+			}
+		}
+		for col := startCol; col < endCol && col < len(rowData); col++ {
+			ch := rowData[col].Ch
+			if ch == 0 || ch == ' ' && col == endCol-1 {
+				continue
+			}
+			buf.WriteRune(ch)
+		}
+	}
+	return strings.TrimRight(buf.String(), " ")
+}
+
+func (t *Terminal) isSelected(absRow, absCol int) bool {
+	if !t.selActive && (t.selStartX == t.selEndX && t.selStartY == t.selEndY) {
+		return false
+	}
+	sx, sy := t.selStartX, t.selStartY
+	ex, ey := t.selEndX, t.selEndY
+	if sy > ey || (sy == ey && sx > ex) {
+		sx, sy, ex, ey = ex, ey, sx, sy
+	}
+	if absRow < sy || absRow > ey {
+		return false
+	}
+	if absRow == sy && absRow == ey {
+		return absCol >= sx && absCol <= ex
+	}
+	if absRow == sy {
+		return absCol >= sx
+	}
+	if absRow == ey {
+		return absCol <= ex
+	}
+	return true
+}
+
 func (t *Terminal) Render(screen tcell.Screen, startY int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.curVis {
+	if t.curVis && t.scrollOffset == 0 {
 		screen.ShowCursor(t.curX, startY+t.curY)
+	} else {
+		screen.HideCursor()
 	}
 	baseStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorDefault)
+
+	sbLines := t.scrollOffset
+	if sbLines > len(t.scrollback) {
+		sbLines = len(t.scrollback)
+	}
+	sbStart := len(t.scrollback) - sbLines
+
 	for y := 0; y < t.rows; y++ {
-		if !t.dirty[y] {
-			continue
-		}
-		for x := 0; x < t.cols; x++ {
-			cell := t.cells[y][x]
-			style := cell.Style
-			if cell.Ch == ' ' {
-				style = baseStyle
+		if y < sbLines {
+			row := t.scrollback[sbStart+y]
+			absRow := sbStart + y
+			for x := 0; x < t.cols; x++ {
+				cell := row[x]
+				style := cell.Style
+				if cell.Ch == ' ' {
+					style = baseStyle
+				}
+				if t.isSelected(absRow, x) {
+					style = style.Reverse(true)
+				}
+				screen.SetContent(x, startY+y, cell.Ch, nil, style)
 			}
-			screen.SetContent(x, startY+y, cell.Ch, nil, style)
+		} else {
+			cy := y - sbLines
+			if !t.dirty[cy] {
+				continue
+			}
+			absRow := len(t.scrollback) + cy
+			for x := 0; x < t.cols; x++ {
+				cell := t.cells[cy][x]
+				style := cell.Style
+				if cell.Ch == ' ' {
+					style = baseStyle
+				}
+				if t.isSelected(absRow, x) {
+					style = style.Reverse(true)
+				}
+				screen.SetContent(x, startY+y, cell.Ch, nil, style)
+			}
+			t.dirty[cy] = false
 		}
-		t.dirty[y] = false
 	}
 }
 
