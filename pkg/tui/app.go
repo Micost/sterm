@@ -125,7 +125,7 @@ type App struct {
 	nsFilter   string
 	nsFilterOn bool
 	nsPrevPage page     // page to return to on ESC
-	mouseSelecting bool
+	mouseDragState int    // 0=idle 1=pressed 2=released
 
 	// context picker
 	contexts    []k8s.ContextInfo
@@ -469,6 +469,7 @@ func (a *App) execContainerShell(row k8s.TableRow, container string) {
 			if err != nil {
 				if sh.started {
 					a.screen.HideCursor()
+					a.mouseDragState = 0
 					a.curr = pageList
 					a.shell = nil
 				}
@@ -566,6 +567,7 @@ func (a *App) handleKey(e *tcell.EventKey) {
 	}
 
 	if a.popupOpen && a.popupTerm != nil {
+		a.mouseDragState = 0
 		a.popupTerm.ResetScroll()
 		switch e.Key() {
 		case tcell.KeyEscape:
@@ -2439,39 +2441,21 @@ func (a *App) handleMouse(e *tcell.EventMouse) {
 		if a.curr == pageShell && a.shell != nil {
 			y -= 2
 			if y >= 0 {
-				if a.mouseSelecting {
-					a.shell.term.UpdateSelection(x, y)
-				} else {
-					a.mouseSelecting = true
-					a.shell.term.StartSelection(x, y)
-				}
-				a.render()
+				a.handleShellMouse(x, y, a.shell.term)
 			}
 		}
 		if a.popupOpen && a.popupTerm != nil {
-			if a.mouseSelecting {
-				a.popupTerm.UpdateSelection(x, y)
-			} else {
-				a.mouseSelecting = true
-				a.popupTerm.StartSelection(x, y)
-			}
-			a.render()
+			a.handleShellMouse(x, y, a.popupTerm)
 		}
-	case btns == tcell.ButtonNone && a.mouseSelecting:
-		a.mouseSelecting = false
+	case btns == tcell.ButtonNone:
 		if a.curr == pageShell && a.shell != nil {
-			a.shell.term.EndSelection()
-			if text := a.shell.term.SelectedText(); text != "" {
-				a.copyToClipboard(text)
+			y -= 2
+			if y >= 0 {
+				a.handleShellMouseRelease(x, y, a.shell.term)
 			}
-			a.render()
 		}
 		if a.popupOpen && a.popupTerm != nil {
-			a.popupTerm.EndSelection()
-			if text := a.popupTerm.SelectedText(); text != "" {
-				a.copyToClipboard(text)
-			}
-			a.render()
+			a.handleShellMouseRelease(x, y, a.popupTerm)
 		}
 	case btns&tcell.Button2 != 0:
 		if a.curr == pageShell && a.shell != nil {
@@ -2485,6 +2469,33 @@ func (a *App) handleMouse(e *tcell.EventMouse) {
 			}
 		}
 	}
+}
+
+func (a *App) handleShellMouse(x, y int, term *Terminal) {
+	switch a.mouseDragState {
+	case 0:
+		a.mouseDragState = 1
+		term.StartSelection(x, y)
+	case 2:
+		term.StartSelection(x, y)
+		a.mouseDragState = 1
+	default:
+		term.UpdateSelection(x, y)
+	}
+	a.render()
+}
+
+func (a *App) handleShellMouseRelease(x, y int, term *Terminal) {
+	if a.mouseDragState == 0 {
+		return
+	}
+	term.UpdateSelection(x, y)
+	term.EndSelection()
+	if text := term.SelectedText(); text != "" {
+		a.copyToClipboard(text)
+	}
+	a.mouseDragState = 2
+	a.render()
 }
 
 func (a *App) copyToClipboard(text string) {
@@ -2537,6 +2548,7 @@ func (a *App) handleShellKey(e *tcell.EventKey) {
 		return
 	}
 	sh := a.shell
+	a.mouseDragState = 0
 	sh.term.ResetScroll()
 
 	switch e.Key() {
